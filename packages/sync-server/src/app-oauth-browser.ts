@@ -76,9 +76,21 @@ app.get('/request', (req, res) => {
   const files: File[] = new FilesService(getAccountDb()).find({
     userId: session.userId,
   });
+  const syncTimes = new Map<string, number | null>(
+    getAccountDb()
+      .all('SELECT id, last_synced_at FROM files')
+      .map(
+        (file: { id: string; last_synced_at: number | null }) =>
+          [file.id, file.last_synced_at] as const,
+      ),
+  );
   const budgets = files
     .filter(file => !file.deleted)
-    .map(file => ({ id: file.id, name: file.name }));
+    .map(file => ({
+      id: file.id,
+      name: file.name,
+      lastSyncedAt: syncTimes.get(file.id) ?? null,
+    }));
   res.send({
     status: 'ok',
     data: {

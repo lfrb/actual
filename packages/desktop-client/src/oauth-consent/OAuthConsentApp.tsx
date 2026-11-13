@@ -23,10 +23,11 @@ import {
   paletteCss,
 } from '@actual-app/components/themes';
 import { View } from '@actual-app/components/view';
+import type { TFunction } from 'i18next';
 
 import { Background } from '#components/Background';
 
-type Budget = { id: string; name: string };
+type Budget = { id: string; name: string; lastSyncedAt?: number | null };
 type ConsentData = {
   clientName?: string;
   csrfToken?: string;
@@ -58,8 +59,47 @@ function redirectTo(uri: string) {
   window.location.assign(uri);
 }
 
+function formatLastSynced(
+  timestamp: number | null | undefined,
+  locale: string,
+  t: TFunction,
+) {
+  if (!timestamp) return null;
+
+  const date = new Date(timestamp);
+  const now = new Date();
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    const time = new Intl.DateTimeFormat(locale, { timeStyle: 'short' }).format(
+      date,
+    );
+    return t('today at {{time}}', { time });
+  }
+
+  const elapsed = Math.max(0, now.getTime() - date.getTime());
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ['year', 365 * 24 * 60 * 60 * 1000],
+    ['month', 30 * 24 * 60 * 60 * 1000],
+    ['week', 7 * 24 * 60 * 60 * 1000],
+    ['day', 24 * 60 * 60 * 1000],
+    ['hour', 60 * 60 * 1000],
+    ['minute', 60 * 1000],
+  ];
+  const [unit, duration] = units.find(([, size]) => elapsed >= size) ?? [
+    'second',
+    1000,
+  ];
+  return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(
+    -Math.max(1, Math.floor(elapsed / duration)),
+    unit,
+  );
+}
+
 export function OAuthConsentApp() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const authorizationQuery = window.location.search;
   const [clientName, setClientName] = useState('');
   const [logoUri, setLogoUri] = useState('');
@@ -302,20 +342,55 @@ export function OAuthConsentApp() {
                         className="budget-options"
                         items={budgets}
                       >
-                        {budget => (
-                          <ListBoxItem
-                            id={budget.id}
-                            key={budget.id}
-                            textValue={budget.name}
-                            className="budget-option"
-                          >
-                            <span className="budget-name">{budget.name}</span>
-                            <span className="budget-option-status">
-                              <SvgCloudCheck aria-hidden="true" />
-                              <Trans>Syncing</Trans>
-                            </span>
-                          </ListBoxItem>
-                        )}
+                        {budget => {
+                          const lastSynced = formatLastSynced(
+                            budget.lastSyncedAt,
+                            i18n.language,
+                            t,
+                          );
+                          const exactTime = budget.lastSyncedAt
+                            ? new Intl.DateTimeFormat(i18n.language, {
+                                dateStyle: 'medium',
+                                timeStyle: 'short',
+                              }).format(budget.lastSyncedAt)
+                            : null;
+                          const hasDuplicateName =
+                            budgets.filter(item => item.name === budget.name)
+                              .length > 1;
+                          const syncLabel = hasDuplicateName
+                            ? exactTime
+                            : lastSynced
+                              ? `${t('Last synced')} ${lastSynced}`
+                              : null;
+                          return (
+                            <ListBoxItem
+                              id={budget.id}
+                              key={budget.id}
+                              textValue={budget.name}
+                              className="budget-option"
+                            >
+                              <span className="budget-name">{budget.name}</span>
+                              <span className="budget-option-status">
+                                <SvgCloudCheck aria-hidden="true" />
+                                <Trans>Syncing</Trans>
+                              </span>
+                              {syncLabel && (
+                                <time
+                                  className="budget-last-synced"
+                                  dateTime={
+                                    budget.lastSyncedAt
+                                      ? new Date(
+                                          budget.lastSyncedAt,
+                                        ).toISOString()
+                                      : undefined
+                                  }
+                                >
+                                  {syncLabel}
+                                </time>
+                              )}
+                            </ListBoxItem>
+                          );
+                        }}
                       </ListBox>
                     </Popover>
                   </Select>

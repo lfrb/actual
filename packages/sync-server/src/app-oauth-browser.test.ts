@@ -87,10 +87,15 @@ describe('standalone OAuth consent', () => {
       .send({ csrfToken, authorizationQuery, fileId: budget });
   }
   it('shows accessible budgets and exchanges an approved code', async () => {
+    const lastSyncedAt = Date.now() - 60_000;
+    db.mutate('UPDATE files SET last_synced_at = ? WHERE id = ?', [
+      lastSyncedAt,
+      fileId,
+    ]);
     const consent = await fetchConsent().expect(200);
     expect(consent.body.data.logoUri).toBe('https://client.example/icon.svg');
     expect(consent.body.data.budgets).toEqual([
-      { id: fileId, name: 'Shared budget' },
+      { id: fileId, name: 'Shared budget', lastSyncedAt },
     ]);
     const approved = await decide(
       'consent',

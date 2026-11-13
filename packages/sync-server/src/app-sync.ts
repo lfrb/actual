@@ -217,6 +217,10 @@ app.post('/sync', async (req, res): Promise<void> => {
     res.status(400).send(result.error);
     return;
   }
+  getAccountDb().mutate('UPDATE files SET last_synced_at = ? WHERE id = ?', [
+    Date.now(),
+    fileId,
+  ]);
   const { trie, newMessages } = result;
 
   const responsePb = create(SyncResponseSchema, {
@@ -418,6 +422,10 @@ app.post('/upload-user-file', async (req, res) => {
           })(),
       }),
     );
+    getAccountDb().mutate('UPDATE files SET last_synced_at = ? WHERE id = ?', [
+      Date.now(),
+      fileId,
+    ]);
 
     res.send({ status: 'ok', groupId });
     return;
@@ -439,6 +447,10 @@ app.post('/upload-user-file', async (req, res) => {
       name,
     }),
   );
+  getAccountDb().mutate('UPDATE files SET last_synced_at = ? WHERE id = ?', [
+    Date.now(),
+    fileId,
+  ]);
 
   res.send({ status: 'ok', groupId });
 });
