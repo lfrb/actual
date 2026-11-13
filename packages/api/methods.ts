@@ -1,4 +1,3 @@
-import { send } from '@actual-app/core/platform/client/connection';
 import type {
   APIAccountEntity,
   APIAccountGroupEntity,
@@ -23,6 +22,8 @@ import type {
 } from '@actual-app/core/types/models';
 import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 import type { EverythingButIdOptional } from '@actual-app/core/types/util';
+
+import { send } from './transport';
 
 export { q } from './app/query';
 

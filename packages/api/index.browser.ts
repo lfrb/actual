@@ -1,8 +1,13 @@
-import { startBackendWorker } from '@actual-app/core/platform/client/backend-worker';
-import { send } from '@actual-app/core/platform/client/connection';
-import type { InitConfig } from '@actual-app/core/server/main';
+import type { send as Send } from '@actual-app/core/platform/client/connection';
 
-import InlineWorker from './browser-worker?worker&inline';
+import type { SDKInitConfig } from './init-config';
+import {
+  clearDispatcher,
+  RemoteModeUnavailableError,
+  setDispatcher,
+} from './transport';
+
+export type { SDKInitConfig } from './init-config';
 
 export * from './methods';
 export * as utils from './utils';
@@ -10,10 +15,21 @@ export * as utils from './utils';
 let worker: Worker | null = null;
 let ownsSession = false;
 let unlistenPageLifecycle: (() => void) | null = null;
+let send: typeof Send | null = null;
 
 export async function init(
-  config: InitConfig = {},
-): Promise<{ send: typeof send }> {
+  config: SDKInitConfig = {},
+): Promise<{ send: typeof Send }> {
+  if (config.mode === 'remote') {
+    throw new RemoteModeUnavailableError();
+  }
+
+  const [{ startBackendWorker }, connection, InlineWorkerModule] =
+    await Promise.all([
+      import('@actual-app/core/platform/client/backend-worker'),
+      import('@actual-app/core/platform/client/connection'),
+      import('./browser-worker?worker&inline'),
+    ]);
   // One backend at a time: a second worker could not open the budget the
   // first one holds, and the first would be out of reach, along with any
   // changes it has not saved
@@ -22,19 +38,27 @@ export async function init(
       'The API is already running. Call shutdown() before calling init() again.',
     );
   }
+
+  const InlineWorker = InlineWorkerModule.default;
+  const localConfig = config;
+  send = connection.send;
   worker = new InlineWorker();
 
   try {
-    await startBackendWorker(worker, config);
-    ownsSession = Boolean(config.serverURL && config.password);
+    await startBackendWorker(worker, localConfig);
+    setDispatcher((type, args, options) =>
+      connection.send(type, args, options),
+    );
+    ownsSession = Boolean(localConfig.serverURL && localConfig.password);
   } catch (error) {
     worker.terminate();
     worker = null;
+    send = null;
     throw error;
   }
 
-  unlistenPageLifecycle = listenForPageLifecycle(worker);
-  return { send };
+  unlistenPageLifecycle = listenForPageLifecycle(worker, connection.send);
+  return { send: connection.send };
 }
 
 // Where sync access handles are missing, the engine keeps the budget in
@@ -52,7 +76,10 @@ export async function init(
 //
 // Best effort: a page that unloads at once may not give the worker the time
 // to finish.
-function listenForPageLifecycle(backend: Worker): (() => void) | null {
+function listenForPageLifecycle(
+  backend: Worker,
+  send: typeof Send,
+): (() => void) | null {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return null;
   }
@@ -165,7 +192,7 @@ function listenForPageLifecycle(backend: Worker): (() => void) | null {
 // whatever a save has not stored yet, and a save can fail, on a full disk
 // for one. The worker is not ended over such changes: the caller hears
 // about it and can try again.
-async function ensureStored() {
+async function ensureStored(send: typeof Send) {
   try {
     await send('storage-flush');
   } catch (cause) {
@@ -180,20 +207,20 @@ async function ensureStored() {
 }
 
 export async function shutdown() {
-  if (worker) {
+  if (worker && send) {
     try {
-      await send('sync');
+      await send?.('sync');
     } catch {
       // most likely that no budget is loaded, so the sync failed
     }
     // Before closing, so that a budget whose changes cannot be stored
     // stays open, and after, because closing saves once more
-    await ensureStored();
+    await ensureStored(send);
     await send('close-budget');
-    await ensureStored();
+    await ensureStored(send);
     try {
       if (ownsSession) {
-        await send('subscribe-sign-out');
+        await send?.('subscribe-sign-out');
       }
     } finally {
       ownsSession = false;
@@ -201,6 +228,8 @@ export async function shutdown() {
       worker = null;
       unlistenPageLifecycle?.();
       unlistenPageLifecycle = null;
+      send = null;
+      clearDispatcher();
     }
   }
 }
