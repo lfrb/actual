@@ -153,10 +153,21 @@ function requireFileAccess(file: File, userId: string) {
   if (requireFileOwner(file, userId) === null) {
     return null;
   }
+  if (file.operationMode === 'remote') {
+    return 'file-access-not-allowed';
+  }
   if (UserService.countUserAccess(file.id, userId) > 0) {
     return null;
   }
   return 'file-access-not-allowed';
+}
+
+function rejectRemoteBudget(file: File | null | undefined, res: Response) {
+  if (!file || file.operationMode !== 'remote') {
+    return false;
+  }
+  res.status(409).send({ status: 'error', reason: 'remote-budget' });
+  return true;
 }
 
 app.post('/sync', async (req, res): Promise<void> => {
@@ -205,6 +216,8 @@ app.post('/sync', async (req, res): Promise<void> => {
     return;
   }
 
+  if (rejectRemoteBudget(currentFile, res)) return;
+
   const errorMessage = validateSyncedFile(groupId, keyId, currentFile);
   if (errorMessage) {
     res.status(400);
@@ -248,6 +261,8 @@ app.post('/user-get-key', (req, res) => {
     return;
   }
 
+  if (rejectRemoteBudget(file, res)) return;
+
   res.send({
     status: 'ok',
     data: {
@@ -274,6 +289,8 @@ app.post('/user-create-key', (req, res) => {
     res.send(fileAccessError);
     return;
   }
+
+  if (rejectRemoteBudget(file, res)) return;
 
   filesService.update(
     file.id,
@@ -308,6 +325,8 @@ app.post('/reset-user-file', async (req, res) => {
     res.send(fileAccessError);
     return;
   }
+
+  if (rejectRemoteBudget(file, res)) return;
 
   const groupId = file.groupId;
 
@@ -385,6 +404,8 @@ app.post('/upload-user-file', async (req, res) => {
     res.send(fileAccessError);
     return;
   }
+
+  if (rejectRemoteBudget(currentFile, res)) return;
 
   const errorMessage = validateUploadedFile(groupId, keyId, currentFile);
   if (errorMessage) {
@@ -475,6 +496,8 @@ app.get('/download-user-file', async (req, res) => {
     return;
   }
 
+  if (rejectRemoteBudget(file, res)) return;
+
   const path = getPathForUserFile(fileId);
 
   if (!path.startsWith(resolve(config.get('userFiles')))) {
@@ -522,6 +545,7 @@ app.get('/list-user-files', (req, res) => {
       deleted: boolToInt(row.deleted),
       fileId: row.id,
       groupId: row.groupId,
+      operationMode: row.operationMode,
       name: row.name,
       encryptKeyId: row.encryptKeyId,
       owner: row.owner,
@@ -569,6 +593,7 @@ app.get('/get-user-file-info', (req, res) => {
       deleted: boolToInt(file.deleted), //   FIXME: convert to boolean, make sure it works in the frontend
       fileId: file.id,
       groupId: file.groupId,
+      operationMode: file.operationMode,
       name: file.name,
       encryptMeta: file.encryptMeta ? JSON.parse(file.encryptMeta) : null,
       usersWithAccess: fileService.findUsersWithAccess(file.id).map(access => ({
@@ -604,6 +629,8 @@ app.post('/delete-user-file', (req, res) => {
     res.send(fileAccessError);
     return;
   }
+
+  if (rejectRemoteBudget(file, res)) return;
 
   accountDb.transaction(() => {
     filesService.update(file.id, new FileUpdate({ deleted: true }));

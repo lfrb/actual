@@ -4,6 +4,8 @@ import type { WrappedDatabase } from '#db';
 import { isValidFileId, isValidGroupId } from '#util/paths';
 import type { FileId, GroupId } from '#util/paths';
 
+export type OperationMode = 'synced' | 'remote';
+
 class FileBase {
   name: string | null | undefined;
   groupId: GroupId | null | undefined;
@@ -14,6 +16,7 @@ class FileBase {
   syncVersion: string | null | undefined;
   deleted: boolean;
   owner: string | null | undefined;
+  operationMode: OperationMode | undefined;
 
   constructor(
     name: string | null | undefined,
@@ -25,6 +28,7 @@ class FileBase {
     syncVersion: string | null | undefined,
     deleted: number | boolean | undefined,
     owner: string | null | undefined,
+    operationMode?: OperationMode,
   ) {
     this.name = name;
     this.groupId = groupId;
@@ -35,6 +39,7 @@ class FileBase {
     this.syncVersion = syncVersion;
     this.deleted = typeof deleted === 'boolean' ? deleted : Boolean(deleted);
     this.owner = owner;
+    this.operationMode = operationMode;
   }
 }
 
@@ -49,10 +54,12 @@ type FileConstructorArgs = {
   syncVersion: string | null;
   deleted?: number | boolean;
   owner: string | null;
+  operationMode?: OperationMode;
 };
 
 class File extends FileBase {
   id: FileId;
+  declare operationMode: OperationMode;
 
   constructor({
     id,
@@ -65,6 +72,7 @@ class File extends FileBase {
     syncVersion = null,
     deleted = false,
     owner = null,
+    operationMode = 'synced',
   }: FileConstructorArgs) {
     super(
       name,
@@ -76,6 +84,7 @@ class File extends FileBase {
       syncVersion,
       deleted,
       owner,
+      operationMode,
     );
     this.id = id;
   }
@@ -87,17 +96,18 @@ class File extends FileBase {
  * @extends FileBase
  */
 class FileUpdate extends FileBase {
-  constructor({
-    name,
-    groupId,
-    encryptSalt,
-    encryptTest,
-    encryptKeyId,
-    encryptMeta,
-    syncVersion,
-    deleted,
-    owner,
-  }: Partial<FileConstructorArgs>) {
+  constructor(args: FileUpdateArgs) {
+    const {
+      name,
+      groupId,
+      encryptSalt,
+      encryptTest,
+      encryptKeyId,
+      encryptMeta,
+      syncVersion,
+      deleted,
+      owner,
+    } = args;
     super(
       name,
       groupId,
@@ -111,6 +121,10 @@ class FileUpdate extends FileBase {
     );
   }
 }
+
+type FileUpdateArgs = Partial<
+  Omit<FileConstructorArgs, 'id' | 'operationMode' | 'deleted'>
+> & { deleted?: boolean };
 
 const boolToInt = (bool: boolean) => {
   return bool ? 1 : 0;
@@ -127,6 +141,7 @@ type RawFile = {
   encrypt_keyid: string | null;
   deleted: number;
   owner: string | null;
+  operation_mode: string;
 };
 
 type UserWithAccess = {
@@ -152,9 +167,10 @@ class FilesService {
   }
 
   set(file: File) {
+    assertRemoteFileMetadata(file.operationMode, file);
     const deletedInt = boolToInt(file.deleted);
     this.accountDb.mutate(
-      'INSERT INTO files (id, group_id, sync_version, name, encrypt_meta, encrypt_salt, encrypt_test, encrypt_keyid, deleted, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ? ,?, ?)',
+      'INSERT INTO files (id, group_id, sync_version, name, encrypt_meta, encrypt_salt, encrypt_test, encrypt_keyid, deleted, owner, operation_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ? ,?, ?, ?)',
       [
         file.id,
         file.groupId,
@@ -166,6 +182,7 @@ class FilesService {
         file.encryptKeyId,
         deletedInt,
         file.owner,
+        file.operationMode,
       ],
     );
   }
@@ -189,10 +206,17 @@ class FilesService {
         JOIN user_access
           ON user_access.file_id = files.id
           AND user_access.user_id = ?
-       WHERE files.deleted = 0 LIMIT ?`,
+       WHERE files.deleted = 0 AND files.operation_mode = 'synced' LIMIT ?`,
             [userId, userId, limit],
           )
-    ).map(item => this.validate(item));
+    )
+      .filter(
+        (item: RawFile) =>
+          item.operation_mode !== 'remote' ||
+          item.owner === userId ||
+          canSeeAll,
+      )
+      .map((item: RawFile) => this.validate(item));
   }
 
   findUsersWithAccess(fileId: FileId) {
@@ -215,7 +239,50 @@ class FilesService {
     return userAccess;
   }
 
-  update(id: FileId, fileUpdate: Partial<File>) {
+  update(id: FileId, fileUpdate: FileUpdateArgs) {
+    if (
+      'operationMode' in fileUpdate &&
+      fileUpdate.operationMode !== undefined
+    ) {
+      throw new GenericFileError('File operation mode is immutable', { id });
+    }
+    const currentFile = this.getRaw(id);
+    if (!currentFile) {
+      throw new GenericFileError('File not found', { id });
+    }
+    this.validate(currentFile);
+    if (currentFile.operation_mode === 'remote') {
+      if (
+        fileUpdate.groupId !== undefined ||
+        fileUpdate.syncVersion !== undefined
+      ) {
+        throw new GenericFileError(
+          'Remote budgets cannot use sync group metadata',
+          { id },
+        );
+      }
+      assertRemoteFileMetadata('remote', {
+        owner: currentFile.owner,
+        groupId: null,
+        syncVersion: null,
+        encryptMeta:
+          fileUpdate.encryptMeta !== undefined
+            ? fileUpdate.encryptMeta
+            : currentFile.encrypt_meta,
+        encryptSalt:
+          fileUpdate.encryptSalt !== undefined
+            ? fileUpdate.encryptSalt
+            : currentFile.encrypt_salt,
+        encryptTest:
+          fileUpdate.encryptTest !== undefined
+            ? fileUpdate.encryptTest
+            : currentFile.encrypt_test,
+        encryptKeyId:
+          fileUpdate.encryptKeyId !== undefined
+            ? fileUpdate.encryptKeyId
+            : currentFile.encrypt_keyid,
+      });
+    }
     let query = 'UPDATE files SET';
     const params = [];
     const updates = [];
@@ -282,6 +349,15 @@ class FilesService {
       throw new GenericFileError('Invalid file ID', { fileId });
     }
 
+    if (
+      rawFile.operation_mode !== 'synced' &&
+      rawFile.operation_mode !== 'remote'
+    ) {
+      throw new GenericFileError('Invalid file operation mode', {
+        fileId,
+        operationMode: rawFile.operation_mode,
+      });
+    }
     let groupId: GroupId | null = null;
     if (rawFile.group_id !== null) {
       if (!isValidGroupId(rawFile.group_id)) {
@@ -290,6 +366,18 @@ class FilesService {
         });
       }
       groupId = rawFile.group_id;
+    }
+
+    if (rawFile.operation_mode === 'remote') {
+      assertRemoteFileMetadata('remote', {
+        owner: rawFile.owner,
+        groupId,
+        syncVersion: rawFile.sync_version,
+        encryptMeta: rawFile.encrypt_meta,
+        encryptSalt: rawFile.encrypt_salt,
+        encryptTest: rawFile.encrypt_test,
+        encryptKeyId: rawFile.encrypt_keyid,
+      });
     }
 
     return new File({
@@ -303,7 +391,38 @@ class FilesService {
       syncVersion: rawFile.sync_version,
       deleted: Boolean(rawFile.deleted),
       owner: rawFile.owner,
+      operationMode: rawFile.operation_mode,
     });
+  }
+}
+
+function assertRemoteFileMetadata(
+  operationMode: OperationMode,
+  file: {
+    owner?: string | null;
+    groupId?: GroupId | null;
+    syncVersion?: string | null;
+    encryptMeta?: string | null;
+    encryptSalt?: string | null;
+    encryptTest?: string | null;
+    encryptKeyId?: string | null;
+  },
+) {
+  if (
+    operationMode === 'remote' &&
+    (file.owner === null ||
+      file.owner === undefined ||
+      file.owner.length === 0 ||
+      file.encryptMeta != null ||
+      file.encryptSalt != null ||
+      file.encryptTest != null ||
+      file.encryptKeyId != null ||
+      file.groupId != null ||
+      file.syncVersion != null)
+  ) {
+    throw new GenericFileError(
+      'Remote budgets cannot use encryption or sync metadata',
+    );
   }
 }
 
