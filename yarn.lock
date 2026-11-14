@@ -176,6 +176,7 @@ __metadata:
   resolution: "@actual-app/sync-server@workspace:packages/sync-server"
   dependencies:
     "@actual-app/api": "workspace:*"
+    "@actual-app/core": "workspace:*"
     "@actual-app/crdt": "workspace:*"
     "@actual-app/web": "workspace:*"
     "@types/bcrypt": "npm:^6.0.0"

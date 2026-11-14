@@ -89,6 +89,7 @@
   },
   "dependencies": {
     "@actual-app/api": "workspace:*",
+    "@actual-app/core": "workspace:*",
     "@actual-app/crdt": "workspace:*",
     "@actual-app/web": "workspace:*",
     "akahu": "^2.6.0",

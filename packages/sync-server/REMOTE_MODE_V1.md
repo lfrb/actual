@@ -1,28 +1,31 @@
 # Remote budget v1 contracts
 
 This document records the server-owned mode metadata, protocol/bootstrap shape,
-and the step 3 worker/session lifecycle. Financial RPC and SDK remote activation
-are not implemented here.
+worker/session lifecycle, and bounded step 4 financial RPC. SDK remote activation
+and durable write deduplication are not implemented here.
 
 ## Protocol
 
-The planned financial RPC protocol uses HTTPS JSON and bearer authentication.
-Those requests carry `protocolVersion: 1` and a client-generated `requestId` (1
-to 128 characters), and responses echo both fields with either `result` or an
-error object. The implemented lifecycle routes below have their own small
-request/response schemas and do not yet use the financial RPC envelope. A
-session is bound to `sessionId`, `budgetId`, `ownerId`, and protocol version;
-the session handle does not replace bearer authentication.
+Financial RPC uses HTTPS JSON and bearer authentication. Requests carry
+`protocolVersion: 1`, a client-generated `requestId` (1 to 128 characters), an
+operation from the static `REMOTE_OPERATION_REGISTRY`, and its operation-specific
+payload. Responses echo the protocol version and request ID with either `result`
+or a stable error code. A session is bound to `sessionId`, `budgetId`, `ownerId`,
+credential identity, and protocol version; the session handle does not replace
+bearer authentication. Authentication, ownership, current remote mode, enabled
+user/key, key grant, and session binding are rechecked immediately before a
+queued operation is sent to the worker.
 
 ## Hosted worker lifecycle
 
-The server exposes only session lifecycle routes in this step:
+The server exposes session lifecycle and financial RPC routes:
 
 | Route                                             | Request                                       | Result                                                            |
 | ------------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------- |
 | `POST /remote/session/open`                       | `{ "protocolVersion": 1, "budgetId": "..." }` | `201` with the protocol version, opaque session ID, and budget ID |
 | `GET /remote/session/:budgetId/:sessionId`        | No body                                       | `200` while the authenticated session remains valid               |
 | `POST /remote/session/:budgetId/:sessionId/close` | No body                                       | `204` after releasing that session                                |
+| `POST /remote/:budgetId/:sessionId/rpc`           | Versioned operation envelope                  | Versioned result/error envelope                                   |
 
 All routes require the usual bearer/session token or a budget API key granted to
 that budget. The server checks the credential, key grant, remote mode, and exact
@@ -42,7 +45,7 @@ uploads, backups, and automatic scheduled transaction production. A private
 worker-only command creates a genuinely empty budget without the sample data used
 by test fixtures.
 
-No public budget-creation route or financial RPC is exposed yet. Disposable
+No public budget-creation route is exposed. Disposable
 integration setup can call the internal `provisionEmptyRemoteBudget(ownerId,
 name)` helper, then open a session with a test credential. Provisioning remains
 unlisted until the engine database is initialized and the worker has closed.
@@ -65,33 +68,74 @@ guard or lock only after stopping every server manager and confirming no worker
 uses the database. This does not provide shared-filesystem or multi-instance
 locking.
 
-The initial typed request schemas in `src/remote-v1-contract.ts` cover
-`accounts.list`, `transactions.list`, and `transactions.import`. Payloads reject
-unknown keys and malformed dates. The later financial RPC registry may add
-individual schemas for the resources in the capability matrix. AQL must be
-transported as a serialized query structure under its own schema; SQL strings,
-executable code, and arbitrary handler names are never protocol operations.
-`transactions.import` accepts JSON transaction objects; operation-size and
-transaction-field validation belong to the RPC implementation stage.
+The typed registry and validators live in the pure shared module
+`@actual-app/core/shared/remote-v1-contract`; the sync server and compiled worker
+use that same operation set. The step 4 registry supports:
+
+- Reads: accounts and account balance; account groups; categories and category
+  groups; payees; tags; rules; budget months and one month; synced preferences;
+  transactions by account/date range; and bounded serialized AQL queries.
+- Writes: account and account-group create/edit/close/reopen; category and
+  category-group create/edit/delete; payee and tag create/edit/delete; rule
+  create/edit/delete; synced preference updates; month amount/carryover changes;
+  and transaction add/update/delete/import through existing domain handlers.
+
+Every operation has an explicit payload allowlist. Nested financial objects
+reject unknown fields, prototype-pollution keys, invalid dates/IDs, unsafe
+integers, and invalid field types. Transaction objects cannot set engine-owned
+IDs, transfer links, tombstones, split-parent markers, schedules, or sync
+internals. Split children are represented by the supported `subtransactions`
+field and validated recursively. The worker maps symbolic operation names to
+fixed engine handler names; caller-supplied handler names are never accepted.
+
+Serialized AQL permits only transactions, accounts, account groups, categories,
+category groups, payees, and rules. It bounds expressions and rows, validates
+fields against each resource's public schema, forces `rawMode=false`,
+`withDead=false`, `validateRefs=true`, and `calculation=false`, and replaces `*`
+with a safe field projection. Raw database tables, preferences through AQL, SQL,
+arbitrary AQL functions, regexp operators, and executable code are rejected.
+Transaction lists issue grouped-split AQL with a SQL limit of 1,001 and reject
+results above 1,000; the returned shape matches the SDK transaction API.
+
+Limits are 1 MiB per JSON request, 500 transactions per add/import batch, 1,000
+AQL rows, 1,000 rows in any returned array, 4 MiB per result, 32 active/queued
+RPCs per worker, and 30 seconds per operation. JSON parsing is mounted before
+the server's larger upload parser; oversized and malformed JSON receive bounded
+JSON errors. Results exceeding row, node, depth, or byte limits fail closed.
+AQL and transaction queries have a SQL row limit. Other domain reads are checked
+for at most 1,000 array entries and the response byte/node limit before IPC
+serialization, after their engine handler returns. These response checks do not
+preflight every existing resource handler. The 30-second timeout kills and
+quarantines a worker that cannot complete. The budget database itself remains
+loaded in worker memory.
+
+RPCs are serialized in each worker. If a read times out, the worker is stopped
+and the response is `operation-timeout`. If a write times out or errors after
+dispatch, the response is `operation-indeterminate`: the mutation may have
+committed, and clients must not automatically retry. A response-size failure
+after a write is also indeterminate. Requests rejected before dispatch return
+`operation-not-dispatched`. This step has no durable operation journal, request
+deduplication, or interrupted-operation status endpoint; those are step 5.
 
 Errors use stable codes: `unsupported-protocol-version`, `unsupported-operation`,
 `invalid-request`, `unauthorized`, `forbidden`, `budget-not-found`,
 `operation-mode-mismatch`, `operation-in-progress`, and
-`operation-interrupted`.
+`operation-interrupted`, `operation-indeterminate`, `operation-timeout`,
+`operation-not-dispatched`, `request-too-large`, `result-too-large`,
+`queue-full`, and `operation-failed`.
 
 ## Capability matrix
 
-| Area            | v1 planned capability                                                                        | Excluded                                               |
-| --------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Reads           | Accounts, categories/groups, payees, tags, rules, budget months, preferences, serialized AQL | Raw SQL/database internals                             |
-| Writes          | Financial object creation/editing and transaction add/update/delete/import                   | File lifecycle, sync, encryption, server URL changes   |
-| Session         | Open and release an owner/budget/protocol-bound session                                      | Session handle as authentication, shared budgets       |
-| Local callbacks | None                                                                                         | Callback serialization, remote batch spanning requests |
-| Undo            | None                                                                                         | Engine-global undo/redo                                |
+| Area            | v1 capability in this step                                                                       | Excluded                                               |
+| --------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| Reads           | Accounts, categories/groups, payees, tags, rules, budget months, preferences, serialized AQL     | Raw SQL/database internals                             |
+| Writes          | Allowlisted financial object edits, month amount/carryover, transaction add/update/delete/import | File lifecycle, sync, encryption, server URL changes   |
+| Session         | Open and release an owner/budget/protocol-bound session                                          | Session handle as authentication, shared budgets       |
+| Local callbacks | None                                                                                             | Callback serialization, remote batch spanning requests |
+| Undo            | None                                                                                             | Engine-global undo/redo                                |
 
-The matrix describes the intended resource capability, not the set of handlers
-implemented in this step. The exported schemas are the narrow initial wire
-surface; later handlers must add one schema at a time.
+Only operations in the registry are reachable. More engine or SDK operations
+remain unsupported until they receive an explicit schema and built-worker test.
 
 ## Mode metadata and lifecycle
 

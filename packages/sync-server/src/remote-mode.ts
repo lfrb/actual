@@ -7,6 +7,11 @@ import express from 'express';
 import { getAccountDb } from './account-db';
 import { File, FilesService } from './app-sync/services/files-service';
 import { config } from './load-config';
+import {
+  parseRemoteV1Request,
+  REMOTE_OPERATION_REGISTRY,
+  RemoteProtocolError,
+} from './remote-v1-contract';
 import { RemoteWorkerManager } from './remote-worker-manager';
 import { isValidFileId } from './util/paths';
 import { validateBudgetSession } from './util/validate-budget-session';
@@ -130,6 +135,128 @@ app.get('/session/:budgetId/:sessionId', (req, res) => {
     sessionId: session.id,
     budgetId: req.params.budgetId,
   });
+});
+
+app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
+  const auth = authenticate(req, res);
+  if (!auth) return;
+  const { budgetId, sessionId } = req.params;
+  const record = getOwnedRemoteBudget(budgetId, auth.userId);
+  if (!record || !auth.grantedFileIds.includes(budgetId)) {
+    res.status(404).json({ status: 'error', reason: 'budget-not-found' });
+    return;
+  }
+  const session = remoteWorkerManager.validateSession(
+    budgetId,
+    sessionId,
+    auth.userId,
+    auth.credentialId,
+  );
+  if (!session) {
+    res.status(401).json({ status: 'error', reason: 'unauthorized' });
+    return;
+  }
+  try {
+    const request = parseRemoteV1Request(req.body);
+    const result = await remoteWorkerManager.dispatch(
+      budgetId,
+      sessionId,
+      () => {
+        const current = authenticate(req, res);
+        const currentBudget =
+          current && getOwnedRemoteBudget(budgetId, current.userId);
+        return Boolean(
+          current &&
+          current.userId === auth.userId &&
+          current.credentialId === auth.credentialId &&
+          current.grantedFileIds.includes(budgetId) &&
+          currentBudget &&
+          currentBudget.runtime.state === 'ready' &&
+          remoteWorkerManager.validateSession(
+            budgetId,
+            sessionId,
+            current.userId,
+            current.credentialId,
+          ),
+        );
+      },
+      request.operation,
+      request.payload,
+      REMOTE_OPERATION_REGISTRY[request.operation].write,
+    );
+    const encoded = JSON.stringify(result);
+    if (Buffer.byteLength(encoded) > 4 * 1024 * 1024) {
+      throw new RemoteProtocolError(
+        'result-too-large',
+        'Result exceeds protocol limit',
+      );
+    }
+    res.json({ protocolVersion: 1, requestId: request.requestId, result });
+  } catch (error) {
+    if (res.headersSent) return;
+    if (error instanceof RemoteProtocolError) {
+      res
+        .status(
+          error.code === 'unsupported-operation'
+            ? 422
+            : error.code === 'result-too-large'
+              ? 413
+              : 400,
+        )
+        .json({
+          protocolVersion: 1,
+          requestId:
+            typeof req.body?.requestId === 'string' ? req.body.requestId : '',
+          error: { code: error.code, message: error.message },
+        });
+      return;
+    }
+    const message = error instanceof Error ? error.message : '';
+    const code =
+      message === 'remote-operation-indeterminate'
+        ? 'operation-indeterminate'
+        : message === 'remote-operation-timeout'
+          ? 'operation-timeout'
+          : message === 'remote-operation-not-dispatched'
+            ? 'operation-not-dispatched'
+            : message === 'remote-session-invalid'
+              ? 'unauthorized'
+              : message === 'remote-request-too-large'
+                ? 'request-too-large'
+                : message === 'remote-queue-full'
+                  ? 'queue-full'
+                  : message === 'remote-result-too-large'
+                    ? 'result-too-large'
+                    : 'operation-failed';
+    const status =
+      code === 'unauthorized'
+        ? 401
+        : code === 'request-too-large' || code === 'result-too-large'
+          ? 413
+          : code === 'queue-full'
+            ? 429
+            : code === 'operation-timeout'
+              ? 504
+              : 503;
+    res.status(status).json({
+      protocolVersion: 1,
+      requestId:
+        typeof req.body?.requestId === 'string'
+          ? req.body.requestId.slice(0, 128)
+          : '',
+      error: {
+        code,
+        message:
+          code === 'operation-indeterminate'
+            ? 'The mutation may have committed; do not retry automatically.'
+            : code === 'operation-timeout'
+              ? 'The read timed out and the worker was stopped.'
+              : code === 'operation-not-dispatched'
+                ? 'The request was not sent to the engine.'
+                : code,
+      },
+    });
+  }
 });
 
 export { app as remoteModeHandlers };

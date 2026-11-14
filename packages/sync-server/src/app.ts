@@ -48,6 +48,47 @@ if (process.env.NODE_ENV !== 'development') {
   );
 }
 
+app.use('/remote', express.json({ limit: '1mb' }), remoteModeHandlers);
+app.use(
+  (
+    error: unknown,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    const parserErrorType =
+      typeof error === 'object' &&
+      error !== null &&
+      'type' in error &&
+      typeof error.type === 'string'
+        ? error.type
+        : null;
+    if (parserErrorType === 'entity.too.large') {
+      res.status(413).json({
+        protocolVersion: 1,
+        requestId: '',
+        error: {
+          code: 'request-too-large',
+          message: 'Request exceeds protocol limit',
+        },
+      });
+      return;
+    }
+    if (parserErrorType === 'entity.parse.failed') {
+      res.status(400).json({
+        protocolVersion: 1,
+        requestId: '',
+        error: {
+          code: 'invalid-request',
+          message: 'Request body must be valid JSON',
+        },
+      });
+      return;
+    }
+    next(error);
+  },
+);
+
 app.use(express.json({ limit: `${config.get('upload.fileSizeLimitMB')}mb` }));
 
 app.use(
@@ -65,7 +106,6 @@ app.use(
 );
 
 app.use('/sync', syncApp.handlers);
-app.use('/remote', remoteModeHandlers);
 app.use('/account', accountApp.handlers);
 app.use('/api-keys', apiKeysApp.handlers);
 app.use('/oauth', oauthApp.handlers);

@@ -14,6 +14,8 @@ const SESSION_IDLE_MS = 30 * 60_000;
 const MAX_SESSIONS_PER_BUDGET = 32;
 const MAX_ACTIVE_WORKERS = 128;
 const lockOperationQueues = new Map<string, Promise<void>>();
+const MAX_RPC_BYTES = 1024 * 1024;
+const RPC_TIMEOUT_MS = 30_000;
 
 export type RemoteWorkerSession = {
   id: string;
@@ -27,6 +29,18 @@ type Worker = {
   lockPath: string;
   lockToken: string;
   sessions: Map<string, RemoteWorkerSession>;
+  pending: Map<
+    string,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+      timeoutError: string;
+    }
+  >;
+  rpcQueue: Promise<void>;
+  queuedRpcCount: number;
+  unavailable: boolean;
   ready: Promise<void>;
   rejectReady: (error: Error) => void;
   resolveReady: () => void;
@@ -42,6 +56,8 @@ export type RemoteWorkerManagerOptions = {
   sessionIdleMs?: number;
   maxSessionsPerBudget?: number;
   maxActiveWorkers?: number;
+  /** Internal worker IPC timeout override for deterministic manager tests. */
+  rpcTimeoutMs?: number;
 };
 
 /** One isolated, bounded child process per opaque server budget identity. */
@@ -53,6 +69,7 @@ export class RemoteWorkerManager {
   private readonly sessionIdleMs: number;
   private readonly maxSessionsPerBudget: number;
   private readonly maxActiveWorkers: number;
+  private readonly rpcTimeoutMs: number;
   private readonly workers = new Map<string, Worker>();
   private readonly starting = new Map<string, Promise<Worker>>();
   private closing = false;
@@ -68,6 +85,7 @@ export class RemoteWorkerManager {
     this.maxSessionsPerBudget =
       options.maxSessionsPerBudget ?? MAX_SESSIONS_PER_BUDGET;
     this.maxActiveWorkers = options.maxActiveWorkers ?? MAX_ACTIVE_WORKERS;
+    this.rpcTimeoutMs = options.rpcTimeoutMs ?? RPC_TIMEOUT_MS;
   }
 
   async createBudget(fileId: string, engineDirectoryId: string) {
@@ -134,6 +152,77 @@ export class RemoteWorkerManager {
     if (!worker) return;
     worker.sessions.delete(sessionId);
     if (worker.sessions.size === 0) await this.stopWorker(fileId, worker);
+  }
+
+  async dispatch<T>(
+    fileId: string,
+    sessionId: string,
+    validateAtDispatch: () => boolean,
+    operation: string,
+    payload: unknown,
+    isWrite: boolean,
+  ): Promise<T> {
+    const worker = this.workers.get(fileId);
+    if (!worker || worker.stopping) {
+      throw new Error('remote-worker-unavailable');
+    }
+    if (worker.queuedRpcCount >= 32) throw new Error('remote-queue-full');
+    worker.queuedRpcCount++;
+    const previous = worker.rpcQueue;
+    let release!: () => void;
+    const queued = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    worker.rpcQueue = previous.then(() => queued);
+    try {
+      await previous;
+      if (
+        this.closing ||
+        worker.stopping ||
+        worker.unavailable ||
+        this.workers.get(fileId) !== worker ||
+        !validateAtDispatch()
+      ) {
+        throw new Error('remote-operation-not-dispatched');
+      }
+      if (!worker.child.connected) throw new Error('remote-worker-unavailable');
+      const id = randomUUID();
+      const message = { type: 'rpc', id, operation, payload };
+      if (Buffer.byteLength(JSON.stringify(message)) > MAX_RPC_BYTES) {
+        throw new Error('remote-request-too-large');
+      }
+      return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          worker.pending.delete(id);
+          reject(
+            new Error(
+              isWrite
+                ? 'remote-operation-indeterminate'
+                : 'remote-operation-timeout',
+            ),
+          );
+          worker.unavailable = true;
+          worker.child.kill('SIGKILL');
+        }, this.rpcTimeoutMs);
+        worker.pending.set(id, {
+          resolve: value => resolve(value as T),
+          reject,
+          timer,
+          timeoutError: isWrite
+            ? 'remote-operation-indeterminate'
+            : 'remote-operation-timeout',
+        });
+        worker.child.send(message, error => {
+          if (!error) return;
+          clearTimeout(timer);
+          worker.pending.delete(id);
+          reject(new Error('remote-worker-unavailable'));
+        });
+      });
+    } finally {
+      worker.queuedRpcCount--;
+      release();
+    }
   }
 
   async stopProvisioningWorker(fileId: string) {
@@ -257,6 +346,7 @@ export class RemoteWorkerManager {
       env: {
         PATH: process.env.PATH ?? '',
         NODE_ENV: 'production',
+        ...(process.env.TZ ? { TZ: process.env.TZ } : {}),
         ACTUAL_HOSTED_RUNTIME: '1',
         ACTUAL_REMOTE_WORKER_ROOT: this.storageRoot,
         ACTUAL_REMOTE_ENGINE_DIRECTORY: engineDirectoryId,
@@ -268,6 +358,10 @@ export class RemoteWorkerManager {
       lockPath,
       lockToken,
       sessions: new Map(),
+      pending: new Map(),
+      rpcQueue: Promise.resolve(),
+      queuedRpcCount: 0,
+      unavailable: false,
       ready,
       rejectReady,
       resolveReady,
@@ -282,6 +376,29 @@ export class RemoteWorkerManager {
       } else if (message.type === 'startup-error') {
         clearTimeout(startupTimer);
         worker.rejectReady(new Error(String(message.message)));
+      } else if (
+        message.type === 'rpc-result' &&
+        typeof message.id === 'string'
+      ) {
+        const pending = worker.pending.get(message.id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        worker.pending.delete(message.id);
+        if (Buffer.byteLength(JSON.stringify(message)) > 4 * MAX_RPC_BYTES) {
+          pending.reject(new Error('remote-result-too-large'));
+        } else if (message.error && isRecord(message.error)) {
+          pending.reject(
+            new Error(
+              message.error.code === 'operation-indeterminate'
+                ? 'remote-operation-indeterminate'
+                : message.error.code === 'result-too-large'
+                  ? 'remote-result-too-large'
+                  : 'remote-operation-failed',
+            ),
+          );
+        } else {
+          pending.resolve(message.result);
+        }
       }
     });
     child.once('error', error => {
@@ -289,6 +406,11 @@ export class RemoteWorkerManager {
       worker.rejectReady(error);
     });
     child.on('exit', (code, signal) => {
+      for (const pending of worker.pending.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(pending.timeoutError));
+      }
+      worker.pending.clear();
       clearTimeout(startupTimer);
       worker.rejectReady(
         new Error(`remote-worker-exited-${code ?? signal ?? 'unknown'}`),
@@ -330,6 +452,19 @@ export class RemoteWorkerManager {
 
   private async stopWorkerProcess(fileId: string, worker: Worker) {
     clearTimeout(worker.idleTimer);
+    worker.unavailable = true;
+    const drained = await Promise.race([
+      worker.rpcQueue.then(() => true),
+      delay(this.shutdownTimeoutMs).then(() => false),
+    ]);
+    if (!drained) {
+      for (const pending of worker.pending.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(pending.timeoutError));
+      }
+      worker.pending.clear();
+      worker.child.kill('SIGKILL');
+    }
     if (worker.child.connected) {
       worker.child.send({ type: 'shutdown', id: randomUUID() }, error => {
         if (error) worker.child.kill('SIGTERM');

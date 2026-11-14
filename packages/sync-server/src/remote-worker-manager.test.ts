@@ -35,6 +35,118 @@ function opaqueId() {
 }
 
 describe('built hosted engine worker', () => {
+  it('revalidates queued calls, applies queue backpressure, and quarantines a timed-out writer', async () => {
+    const { manager } = await createManager();
+    const budgetId = opaqueId();
+    const engineId = opaqueId();
+    await manager.createBudget(budgetId, engineId);
+    await manager.stopProvisioningWorker(budgetId);
+    const session = await manager.openSession(
+      budgetId,
+      engineId,
+      'owner',
+      'key',
+    );
+
+    const first = manager.dispatch(
+      budgetId,
+      session.id,
+      () => true,
+      'accounts.list',
+      {},
+      false,
+    );
+    let stillAuthorized = true;
+    const queued = manager.dispatch(
+      budgetId,
+      session.id,
+      () => stillAuthorized,
+      'accounts.list',
+      {},
+      false,
+    );
+    stillAuthorized = false;
+    await first;
+    await expect(queued).rejects.toThrow('remote-operation-not-dispatched');
+
+    const queuedCalls = Array.from({ length: 32 }, () =>
+      manager.dispatch(
+        budgetId,
+        session.id,
+        () => true,
+        'accounts.list',
+        {},
+        false,
+      ),
+    );
+    await expect(
+      manager.dispatch(
+        budgetId,
+        session.id,
+        () => true,
+        'accounts.list',
+        {},
+        false,
+      ),
+    ).rejects.toThrow('remote-queue-full');
+    const settled = Promise.allSettled(queuedCalls);
+    await manager.closeAll();
+    await settled;
+  });
+
+  it('reports dispatched write timeouts as indeterminate and rejects queued commands', async () => {
+    const root = await fs.mkdtemp(
+      path.join('/tmp', 'actual-remote-worker-timeout-'),
+    );
+    roots.push(root);
+    const entry = path.join(root, 'stall-worker.js');
+    await fs.writeFile(
+      entry,
+      "process.on('message', message => { if (message?.type === 'shutdown') process.exit(0); }); process.send({ type: 'ready' });",
+    );
+    const manager = new RemoteWorkerManager({
+      storageRoot: root,
+      workerEntry: entry,
+      startupTimeoutMs: 30_000,
+      rpcTimeoutMs: 25,
+    });
+    managers.push(manager);
+    const budgetId = opaqueId();
+    const engineId = opaqueId();
+    await manager.createBudget(budgetId, engineId);
+    await manager.stopProvisioningWorker(budgetId);
+    const session = await manager.openSession(
+      budgetId,
+      engineId,
+      'owner',
+      'key',
+    );
+    const write = manager.dispatch(
+      budgetId,
+      session.id,
+      () => true,
+      'preferences.save',
+      { id: 'numberFormat', value: 'comma-dot' },
+      true,
+    );
+    const queuedRead = manager.dispatch(
+      budgetId,
+      session.id,
+      () => true,
+      'accounts.list',
+      {},
+      false,
+    );
+    await Promise.all([
+      expect(write).rejects.toThrow('remote-operation-indeterminate'),
+      expect(queuedRead).rejects.toThrow('remote-operation-not-dispatched'),
+    ]);
+    await vi.waitFor(
+      () => expect(manager.getWorkerPid(budgetId)).toBeUndefined(),
+      { timeout: 5_000 },
+    );
+  });
+
   it('shares concurrent sessions, isolates budgets, and reloads persistent SQLite after restart', async () => {
     const { manager, root } = await createManager();
     const [budgetA, budgetB, engineA, engineB] = [
