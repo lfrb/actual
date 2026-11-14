@@ -128,7 +128,9 @@ describe('remote mode metadata and legacy route guards', () => {
     const visibleFiles = new FilesService(getAccountDb()).find({
       userId: 'genericUser',
     });
-    expect(visibleFiles.some(file => file.id === id)).toBe(false);
+    expect(visibleFiles.some((file: { id: string }) => file.id === id)).toBe(
+      false,
+    );
   });
 
   it('enforces the mode constraint and exposes mode in authorized file info', async () => {

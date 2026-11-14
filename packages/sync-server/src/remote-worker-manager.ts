@@ -147,6 +147,45 @@ export class RemoteWorkerManager {
     return this.workers.get(fileId)?.child.pid;
   }
 
+  async operationStatus<T>(
+    fileId: string,
+    engineDirectoryId: string,
+    userId: string,
+    credentialId: string,
+    requestId: string,
+    validateAtDispatch: () => boolean,
+  ): Promise<T | null> {
+    if (!validateAtDispatch()) throw new Error('remote-session-invalid');
+    const worker = await this.getWorker(fileId, engineDirectoryId);
+    if (!validateAtDispatch()) throw new Error('remote-session-invalid');
+    this.expireIdleSessions(worker);
+    if (worker.sessions.size >= this.maxSessionsPerBudget) {
+      throw new Error('remote-session-limit');
+    }
+    const sessionId = randomUUID();
+    worker.sessions.set(sessionId, {
+      id: sessionId,
+      userId,
+      credentialId,
+      lastUsedAt: Date.now(),
+    });
+    this.scheduleIdleCheck(fileId, worker);
+    try {
+      return await this.dispatch<T>(
+        fileId,
+        sessionId,
+        validateAtDispatch,
+        '__journal_status',
+        { targetRequestId: requestId },
+        false,
+        randomUUID(),
+      );
+    } finally {
+      worker.sessions.delete(sessionId);
+      this.scheduleIdleCheck(fileId, worker);
+    }
+  }
+
   async closeSession(fileId: string, sessionId: string) {
     const worker = this.workers.get(fileId);
     if (!worker) return;
@@ -161,6 +200,7 @@ export class RemoteWorkerManager {
     operation: string,
     payload: unknown,
     isWrite: boolean,
+    requestId: string,
   ): Promise<T> {
     const worker = this.workers.get(fileId);
     if (!worker || worker.stopping) {
@@ -187,7 +227,27 @@ export class RemoteWorkerManager {
       }
       if (!worker.child.connected) throw new Error('remote-worker-unavailable');
       const id = randomUUID();
-      const message = { type: 'rpc', id, operation, payload };
+      const session = worker.sessions.get(sessionId);
+      if (!session) throw new Error('remote-operation-not-dispatched');
+      const message =
+        operation === '__journal_status'
+          ? {
+              type: 'operation-status',
+              id,
+              targetRequestId: (payload as { targetRequestId: string })
+                .targetRequestId,
+              budgetId: fileId,
+              credentialId: session.credentialId,
+            }
+          : {
+              type: 'rpc',
+              id,
+              requestId,
+              budgetId: fileId,
+              credentialId: session.credentialId,
+              operation,
+              payload,
+            };
       if (Buffer.byteLength(JSON.stringify(message)) > MAX_RPC_BYTES) {
         throw new Error('remote-request-too-large');
       }
@@ -260,7 +320,10 @@ export class RemoteWorkerManager {
     worker.idleTimer.unref();
   }
 
-  private async getWorker(fileId: string, engineDirectoryId: string) {
+  private async getWorker(
+    fileId: string,
+    engineDirectoryId: string,
+  ): Promise<Worker> {
     return this.getOrStartWorker(fileId, engineDirectoryId, false);
   }
 
@@ -268,7 +331,7 @@ export class RemoteWorkerManager {
     fileId: string,
     engineDirectoryId: string,
     create: boolean,
-  ) {
+  ): Promise<Worker> {
     const existing = this.workers.get(fileId);
     if (existing) {
       if (existing.stopping) {
@@ -350,6 +413,7 @@ export class RemoteWorkerManager {
         ACTUAL_HOSTED_RUNTIME: '1',
         ACTUAL_REMOTE_WORKER_ROOT: this.storageRoot,
         ACTUAL_REMOTE_ENGINE_DIRECTORY: engineDirectoryId,
+        ACTUAL_REMOTE_BUDGET_ID: fileId,
         ...(create ? { ACTUAL_REMOTE_CREATE: '1' } : {}),
       },
     });
@@ -377,7 +441,8 @@ export class RemoteWorkerManager {
         clearTimeout(startupTimer);
         worker.rejectReady(new Error(String(message.message)));
       } else if (
-        message.type === 'rpc-result' &&
+        (message.type === 'rpc-result' ||
+          message.type === 'operation-status-result') &&
         typeof message.id === 'string'
       ) {
         const pending = worker.pending.get(message.id);
@@ -389,11 +454,7 @@ export class RemoteWorkerManager {
         } else if (message.error && isRecord(message.error)) {
           pending.reject(
             new Error(
-              message.error.code === 'operation-indeterminate'
-                ? 'remote-operation-indeterminate'
-                : message.error.code === 'result-too-large'
-                  ? 'remote-result-too-large'
-                  : 'remote-operation-failed',
+              `remote-${String(message.error.code ?? 'operation-failed')}`,
             ),
           );
         } else {

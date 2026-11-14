@@ -1,8 +1,8 @@
 # Remote budget v1 contracts
 
 This document records the server-owned mode metadata, protocol/bootstrap shape,
-worker/session lifecycle, and bounded step 4 financial RPC. SDK remote activation
-and durable write deduplication are not implemented here.
+worker/session lifecycle, bounded financial RPC, and durable operation journal.
+SDK remote activation is not implemented here.
 
 ## Protocol
 
@@ -26,6 +26,7 @@ The server exposes session lifecycle and financial RPC routes:
 | `GET /remote/session/:budgetId/:sessionId`        | No body                                       | `200` while the authenticated session remains valid               |
 | `POST /remote/session/:budgetId/:sessionId/close` | No body                                       | `204` after releasing that session                                |
 | `POST /remote/:budgetId/:sessionId/rpc`           | Versioned operation envelope                  | Versioned result/error envelope                                   |
+| `GET /remote/:budgetId/operations/:requestId`     | No body                                       | Credential-scoped durable operation status and saved result       |
 
 All routes require the usual bearer/session token or a budget API key granted to
 that budget. The server checks the credential, key grant, remote mode, and exact
@@ -110,18 +111,50 @@ quarantines a worker that cannot complete. The budget database itself remains
 loaded in worker memory.
 
 RPCs are serialized in each worker. If a read times out, the worker is stopped
-and the response is `operation-timeout`. If a write times out or errors after
-dispatch, the response is `operation-indeterminate`: the mutation may have
-committed, and clients must not automatically retry. A response-size failure
-after a write is also indeterminate. Requests rejected before dispatch return
-`operation-not-dispatched`. This step has no durable operation journal, request
-deduplication, or interrupted-operation status endpoint; those are step 5.
+and the response is `operation-timeout`. A write timeout or lost worker response
+returns `operation-indeterminate`; clients must query its durable status before
+deciding what to do next. Caught handler errors and response-size failures use
+the journal to distinguish a failed command from an interrupted command with
+committed changes. Requests rejected before dispatch return
+`operation-not-dispatched`.
+
+Every write RPC is journaled in a server-only `remote_operations` table in that
+budget's SQLite database. The client `requestId` remains stable across retries
+and is separate from the worker IPC correlation ID. The payload hash covers the
+validated operation and canonical payload; the key is scoped to the budget and
+credential. Repeating the same key and payload returns the saved result or
+terminal status. Reusing the key with a different payload returns
+`request-id-conflict`. A status lookup requires current owner access and the same
+credential, and returns `operation-not-found` for an unknown key. Read RPCs do
+not create journal rows. The budget owner can inspect an operation only through
+the credential that issued it; each lookup rechecks current access and status
+reads count toward worker session and queue limits.
+
+Writes begin as `running`. The commit count and affected dataset/row identifiers
+are updated inside the same SQLite transaction as the financial messages.
+After the engine handler returns, the bounded result is saved as `succeeded`.
+On worker startup, any leftover `running` rows become `interrupted`; the budget
+lock ensures no prior worker can still be executing. A caught error before any
+financial commit is saved as `failed`; an error after one or more commits is
+saved as `interrupted`. Neither state is automatically replayed. Results are
+bounded to the RPC result limit; request ID/hash/status records are
+retained so an old request ID is never silently reused. Responses up to 64 KiB
+are retained, with at most the latest 16 per budget; older bodies are cleared.
+Larger results are marked expired when success is recorded, before the original
+response is sent. Status returns `resultExpired: true`, and retrying an expired
+response returns `operation-result-expired` without rerunning the mutation.
+
+`operation-indeterminate` reports a worker timeout or lost worker response after
+dispatch, where a commit may or may not have happened; clients must query status
+and must not retry automatically. `operation-interrupted` reports that durable
+commit evidence exists or startup recovered a still-running journal row. It
+also never triggers a retry.
 
 Errors use stable codes: `unsupported-protocol-version`, `unsupported-operation`,
 `invalid-request`, `unauthorized`, `forbidden`, `budget-not-found`,
-`operation-mode-mismatch`, `operation-in-progress`, and
+`operation-mode-mismatch`, `operation-in-progress`, `operation-result-expired`,
 `operation-interrupted`, `operation-indeterminate`, `operation-timeout`,
-`operation-not-dispatched`, `request-too-large`, `result-too-large`,
+`operation-not-dispatched`, `request-id-conflict`, `request-too-large`, `result-too-large`,
 `queue-full`, and `operation-failed`.
 
 ## Capability matrix

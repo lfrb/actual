@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
@@ -8,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RemoteWorkerManager } from './remote-worker-manager';
 
 const workerEntry = new URL('../../api/dist/hosted-worker.js', import.meta.url);
+const require = createRequire(import.meta.url);
 const managers: RemoteWorkerManager[] = [];
 const roots: string[] = [];
 
@@ -34,7 +36,132 @@ function opaqueId() {
   return crypto.randomBytes(16).toString('hex');
 }
 
+async function createCrashWorkerEntry(root: string) {
+  const wrapperPath = path.join(root, 'kill-after-commit.mjs');
+  await fs.writeFile(
+    wrapperPath,
+    `import { createRequire } from 'node:module';
+import { existsSync, writeFileSync } from 'node:fs';
+const require = createRequire(import.meta.url);
+const Database = require(${JSON.stringify(require.resolve('better-sqlite3'))});
+const marker = ${JSON.stringify(path.join(root, 'killed-after-commit'))};
+const original = Database.prototype.transaction;
+Database.prototype.transaction = function (...args) {
+  const database = this;
+  const transaction = original.apply(database, args);
+  const wrap = fn => function (...parameters) {
+    const result = fn.apply(this, parameters);
+    try {
+      const row = database.prepare("SELECT request_id FROM remote_operations WHERE status='running' AND commit_count > 0 LIMIT 1").get();
+      if (row?.request_id === 'crash-request-1' && !existsSync(marker)) {
+        writeFileSync(marker, 'killed');
+        process.kill(process.pid, 'SIGKILL');
+      }
+    } catch {}
+    return result;
+  };
+  const wrapped = wrap(transaction);
+  wrapped.immediate = wrap(transaction.immediate);
+  wrapped.deferred = wrap(transaction.deferred);
+  wrapped.exclusive = wrap(transaction.exclusive);
+  return wrapped;
+};
+await import(${JSON.stringify(workerEntry.href)});
+`,
+  );
+  return wrapperPath;
+}
+
 describe('built hosted engine worker', () => {
+  it('recovers a committed write as interrupted after a real worker kill and never replays it', async () => {
+    const root = await fs.mkdtemp(
+      path.join('/tmp', 'actual-remote-worker-crash-'),
+    );
+    roots.push(root);
+    const manager = new RemoteWorkerManager({
+      storageRoot: root,
+      workerEntry: await createCrashWorkerEntry(root),
+      startupTimeoutMs: 30_000,
+      rpcTimeoutMs: 30_000,
+    });
+    managers.push(manager);
+    const budgetId = opaqueId();
+    const engineId = opaqueId();
+    await manager.createBudget(budgetId, engineId);
+    await manager.stopProvisioningWorker(budgetId);
+    const session = await manager.openSession(
+      budgetId,
+      engineId,
+      'owner',
+      'credential',
+    );
+    await expect(
+      manager.dispatch(
+        budgetId,
+        session.id,
+        () => true,
+        'account.create',
+        {
+          account: { name: 'Crash boundary', offbudget: false, closed: false },
+        },
+        true,
+        'crash-request-1',
+      ),
+    ).rejects.toThrow('remote-operation-indeterminate');
+    await vi.waitFor(() =>
+      expect(manager.getWorkerPid(budgetId)).toBeUndefined(),
+    );
+
+    const reopenedSession = await manager.openSession(
+      budgetId,
+      engineId,
+      'owner',
+      'credential',
+    );
+    const status = await manager.operationStatus<{
+      status: string;
+      commitCount: number;
+      errorCode: string | null;
+    }>(
+      budgetId,
+      engineId,
+      'owner',
+      'credential',
+      'crash-request-1',
+      () => true,
+    );
+    expect(status).toMatchObject({
+      status: 'interrupted',
+      commitCount: 1,
+      errorCode: 'operation-interrupted',
+    });
+    await expect(
+      manager.dispatch(
+        budgetId,
+        reopenedSession.id,
+        () => true,
+        'account.create',
+        {
+          account: { name: 'Crash boundary', offbudget: false, closed: false },
+        },
+        true,
+        'crash-request-1',
+      ),
+    ).rejects.toThrow('remote-operation-interrupted');
+    const accounts = await manager.dispatch<Array<{ name: string }>>(
+      budgetId,
+      reopenedSession.id,
+      () => true,
+      'accounts.list',
+      {},
+      false,
+      'crash-verify-accounts',
+    );
+    expect(accounts.filter(row => row.name === 'Crash boundary')).toHaveLength(
+      1,
+    );
+  });
+
   it('revalidates queued calls, applies queue backpressure, and quarantines a timed-out writer', async () => {
     const { manager } = await createManager();
     const budgetId = opaqueId();
@@ -55,6 +182,7 @@ describe('built hosted engine worker', () => {
       'accounts.list',
       {},
       false,
+      'first',
     );
     let stillAuthorized = true;
     const queued = manager.dispatch(
@@ -64,6 +192,7 @@ describe('built hosted engine worker', () => {
       'accounts.list',
       {},
       false,
+      'queued',
     );
     stillAuthorized = false;
     await first;
@@ -77,6 +206,7 @@ describe('built hosted engine worker', () => {
         'accounts.list',
         {},
         false,
+        `queued-${Math.random()}`,
       ),
     );
     await expect(
@@ -87,6 +217,7 @@ describe('built hosted engine worker', () => {
         'accounts.list',
         {},
         false,
+        'full',
       ),
     ).rejects.toThrow('remote-queue-full');
     const settled = Promise.allSettled(queuedCalls);
@@ -128,6 +259,7 @@ describe('built hosted engine worker', () => {
       'preferences.save',
       { id: 'numberFormat', value: 'comma-dot' },
       true,
+      'write',
     );
     const queuedRead = manager.dispatch(
       budgetId,
@@ -136,6 +268,7 @@ describe('built hosted engine worker', () => {
       'accounts.list',
       {},
       false,
+      'queued-read',
     );
     await Promise.all([
       expect(write).rejects.toThrow('remote-operation-indeterminate'),

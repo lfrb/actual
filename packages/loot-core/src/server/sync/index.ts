@@ -25,6 +25,8 @@ import {
 } from '#server/mutators';
 import { postBinary } from '#server/post';
 import * as prefs from '#server/prefs';
+import { getRemoteOperationContext } from '#server/remote-operation-context';
+import { recordRemoteOperationCommit } from '#server/remote-operation-journal';
 import { getServer } from '#server/server-config';
 import * as sheet from '#server/sheet';
 import { resolveName } from '#server/spreadsheet/util';
@@ -548,6 +550,28 @@ async function _applyMessages(messages: Message[], isReceived = false) {
     }
 
     newData = fetchData(idsPerTable);
+
+    // In hosted mode this bookkeeping shares the exact SQLite transaction
+    // with the financial messages. A crash can therefore distinguish a
+    // dispatched write from one that reached a durable commit.
+    const remoteOperation = getRemoteOperationContext();
+    if (remoteOperation) {
+      const newIds = messages
+        .filter(
+          msg =>
+            !msg.old &&
+            !deferredMessages.has(msg) &&
+            msg.dataset !== 'prefs' &&
+            msg.dataset !== 'spreadsheet_cells',
+        )
+        .map(msg => `${msg.dataset}:${msg.row}`);
+      recordRemoteOperationCommit(
+        remoteOperation.budgetId,
+        remoteOperation.credentialId,
+        remoteOperation.requestId,
+        newIds,
+      );
+    }
   };
   if (isReceived) {
     receiveInTransaction(messages, applyInTransaction);

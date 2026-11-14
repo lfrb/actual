@@ -60,10 +60,13 @@ async function invokeRoute(
       this.headers[name] = value;
     },
   };
+  const requestHeaders: Record<string, string> = {
+    authorization: `Bearer ${token}`,
+  };
   const req = {
     method: method.toUpperCase(),
     path: routePath,
-    headers: { authorization: `Bearer ${token}` },
+    headers: requestHeaders,
     body,
     params,
     get(name: string) {
@@ -145,6 +148,60 @@ describe('remote session authorization', () => {
       })
       .expect(200);
     expect(createdAccount.body.result).toBeTruthy();
+    const duplicateAccount = await request(server)
+      .post(rpcUrl)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        protocolVersion: 1,
+        requestId: 'create-account-1',
+        operation: 'account.create',
+        payload: {
+          account: { name: 'Remote checking', offbudget: false, closed: false },
+        },
+      })
+      .expect(200);
+    expect(duplicateAccount.body.result).toBe(createdAccount.body.result);
+    await request(server)
+      .post(rpcUrl)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        protocolVersion: 1,
+        requestId: 'create-account-1',
+        operation: 'account.create',
+        payload: {
+          account: {
+            name: 'Different payload',
+            offbudget: false,
+            closed: false,
+          },
+        },
+      })
+      .expect(409);
+    const operationStatus = await request(server)
+      .get(`/remote/${budget.id}/operations/create-account-1`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(operationStatus.body.operation).toMatchObject({
+      operation: 'account.create',
+      status: 'succeeded',
+      result: createdAccount.body.result,
+    });
+    const secondCredential = randomUUID();
+    getAccountDb().mutate(
+      'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, -1)',
+      [secondCredential, owner],
+    );
+    await request(server)
+      .get(`/remote/${budget.id}/operations/create-account-1`)
+      .set('Authorization', `Bearer ${secondCredential}`)
+      .expect(404);
+    getAccountDb().mutate('DELETE FROM sessions WHERE token = ?', [
+      secondCredential,
+    ]);
+    await request(server)
+      .get(`/remote/${budget.id}/operations/create-account-1`)
+      .set('Authorization', `Bearer ${secondCredential}`)
+      .expect(401);
     const listed = await request(server)
       .post(rpcUrl)
       .set('Authorization', `Bearer ${token}`)

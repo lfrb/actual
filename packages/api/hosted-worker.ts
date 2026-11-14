@@ -1,4 +1,14 @@
+import { createHash } from 'node:crypto';
+
 import { init, lib } from '@actual-app/core/server/main';
+import { setRemoteOperationContext } from '@actual-app/core/server/remote-operation-context';
+import {
+  beginRemoteOperation,
+  failRemoteOperation,
+  getRemoteOperationStatus,
+  initializeRemoteOperationJournal,
+  succeedRemoteOperation,
+} from '@actual-app/core/server/remote-operation-journal';
 import {
   parseRemoteCalendarDate,
   parseRemoteV1Request,
@@ -49,7 +59,7 @@ process.on('message', message => {
     message &&
     typeof message === 'object' &&
     'type' in message &&
-    message.type === 'rpc'
+    (message.type === 'rpc' || message.type === 'operation-status')
   ) {
     const next = rpcQueue.then(() => dispatchRpc(message));
     rpcQueue = next.then(
@@ -67,7 +77,10 @@ async function start() {
   }
   const dataDir = process.env.ACTUAL_REMOTE_WORKER_ROOT;
   const directoryId = process.env.ACTUAL_REMOTE_ENGINE_DIRECTORY;
-  if (!dataDir || !directoryId) throw new Error('worker-config-missing');
+  const budgetId = process.env.ACTUAL_REMOTE_BUDGET_ID;
+  if (!dataDir || !directoryId || !budgetId) {
+    throw new Error('worker-config-missing');
+  }
   if (process.env.ACTUAL_SERVER_URL || process.env.ACTUAL_SERVER_TOKEN) {
     throw new Error('hosted-worker-server-auth-forbidden');
   }
@@ -85,6 +98,7 @@ async function start() {
     throw new Error(`engine-load-${String(result.error)}`);
   }
   loaded = true;
+  initializeRemoteOperationJournal(budgetId);
   send({ type: 'ready', pid: process.pid });
 }
 
@@ -92,19 +106,104 @@ async function dispatchRpc(message: unknown) {
   if (!process.send || !message || typeof message !== 'object') return;
   const value = message as Record<string, unknown>;
   const id = typeof value.id === 'string' ? value.id : '';
+  if (value.type === 'operation-status') {
+    const credentialId =
+      typeof value.credentialId === 'string' ? value.credentialId : '';
+    const requestId =
+      typeof value.targetRequestId === 'string' ? value.targetRequestId : '';
+    const budgetId = typeof value.budgetId === 'string' ? value.budgetId : '';
+    send({
+      type: 'operation-status-result',
+      id,
+      result:
+        budgetId === process.env.ACTUAL_REMOTE_BUDGET_ID &&
+        credentialId.length > 0 &&
+        requestId.length > 0
+          ? getRemoteOperationStatus(budgetId, credentialId, requestId)
+          : null,
+    });
+    return;
+  }
+  const requestId = typeof value.requestId === 'string' ? value.requestId : '';
+  const credentialId =
+    typeof value.credentialId === 'string' ? value.credentialId : '';
+  const budgetId = typeof value.budgetId === 'string' ? value.budgetId : '';
   let writeOperation = false;
+  let operation: string | null = null;
   try {
-    if (!id || value.type !== 'rpc' || typeof value.operation !== 'string') {
+    if (
+      !id ||
+      !requestId ||
+      !credentialId ||
+      !budgetId ||
+      budgetId !== process.env.ACTUAL_REMOTE_BUDGET_ID ||
+      value.type !== 'rpc' ||
+      typeof value.operation !== 'string'
+    ) {
       throw new Error('invalid-request');
     }
     const request = parseRemoteV1Request({
       protocolVersion: 1,
-      requestId: id,
+      requestId,
       operation: value.operation,
       payload: value.payload,
     });
+    operation = request.operation;
     const spec = REMOTE_OPERATION_REGISTRY[request.operation];
     writeOperation = spec.write;
+    if (writeOperation) {
+      const journal = beginRemoteOperation({
+        budgetId,
+        credentialId,
+        requestId,
+        operation: request.operation,
+        payloadHash: createHash('sha256')
+          .update(
+            stableJson({
+              operation: request.operation,
+              payload: request.payload,
+            }),
+          )
+          .digest('hex'),
+      });
+      if (journal.kind === 'conflict') {
+        send({
+          type: 'rpc-result',
+          id,
+          error: { code: 'request-id-conflict' },
+        });
+        return;
+      }
+      if (journal.kind === 'existing') {
+        if (journal.status.status === 'running') {
+          send({
+            type: 'rpc-result',
+            id,
+            error: { code: 'operation-in-progress' },
+          });
+        } else if (journal.status.status === 'succeeded') {
+          if (journal.status.resultExpired) {
+            send({
+              type: 'rpc-result',
+              id,
+              error: { code: 'operation-result-expired' },
+            });
+          } else {
+            send({ type: 'rpc-result', id, result: journal.status.result });
+          }
+        } else {
+          send({
+            type: 'rpc-result',
+            id,
+            error: { code: journal.status.errorCode ?? 'operation-failed' },
+          });
+        }
+        return;
+      }
+    }
+    setRemoteOperationContext(
+      writeOperation ? { budgetId, credentialId, requestId } : null,
+    );
     const args =
       request.operation === 'rule.delete'
         ? request.payload.id
@@ -135,17 +234,50 @@ async function dispatchRpc(message: unknown) {
     if (Buffer.byteLength(encoded) > 4 * 1024 * 1024) {
       throw new Error('remote-result-too-large');
     }
+    if (writeOperation) {
+      succeedRemoteOperation({
+        budgetId,
+        credentialId,
+        requestId,
+        result: wireResult,
+      });
+    }
     send({ type: 'rpc-result', id, result: wireResult });
   } catch (error) {
-    const code = writeOperation
-      ? 'operation-indeterminate'
-      : error instanceof Error && error.message === 'invalid-request'
+    let code =
+      error instanceof Error && error.message === 'invalid-request'
         ? 'invalid-request'
-        : error instanceof Error && error.message === 'remote-result-too-large'
-          ? 'result-too-large'
-          : 'operation-failed';
+        : error instanceof Error && error.message === 'request-id-conflict'
+          ? 'request-id-conflict'
+          : error instanceof Error &&
+              error.message === 'remote-result-too-large'
+            ? 'result-too-large'
+            : 'operation-failed';
+    if (writeOperation && credentialId && requestId && budgetId && operation) {
+      code = failRemoteOperation({
+        budgetId,
+        credentialId,
+        requestId,
+        errorCode: code,
+      });
+    }
     send({ type: 'rpc-result', id, error: { code } });
+  } finally {
+    setRemoteOperationContext(null);
   }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).sort(([left], [right]) =>
+      left.localeCompare(right),
+    );
+    return `{${entries
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 async function listTransactionsBounded(payload: Record<string, unknown>) {

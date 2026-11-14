@@ -137,6 +137,67 @@ app.get('/session/:budgetId/:sessionId', (req, res) => {
   });
 });
 
+app.get('/:budgetId/operations/:requestId', async (req, res) => {
+  const auth = authenticate(req, res);
+  if (!auth) return;
+  const { budgetId, requestId } = req.params;
+  const record = getOwnedRemoteBudget(budgetId, auth.userId);
+  if (
+    !record ||
+    !auth.grantedFileIds.includes(budgetId) ||
+    requestId.length < 1 ||
+    requestId.length > 128
+  ) {
+    res.status(404).json({ status: 'error', reason: 'budget-not-found' });
+    return;
+  }
+  if (record.runtime.state !== 'ready') {
+    res.status(409).json({ status: 'error', reason: 'budget-not-ready' });
+    return;
+  }
+  try {
+    const operation = await remoteWorkerManager.operationStatus(
+      budgetId,
+      record.runtime.engine_directory_id,
+      auth.userId,
+      auth.credentialId,
+      requestId,
+      () => {
+        const current = authenticate(req, res);
+        const currentBudget =
+          current && getOwnedRemoteBudget(budgetId, current.userId);
+        return Boolean(
+          current &&
+          current.userId === auth.userId &&
+          current.credentialId === auth.credentialId &&
+          current.grantedFileIds.includes(budgetId) &&
+          currentBudget?.runtime.state === 'ready',
+        );
+      },
+    );
+    const current = authenticate(req, res);
+    if (
+      !current ||
+      current.userId !== auth.userId ||
+      current.credentialId !== auth.credentialId ||
+      !current.grantedFileIds.includes(budgetId) ||
+      !getOwnedRemoteBudget(budgetId, current.userId)
+    ) {
+      if (!res.headersSent) {
+        res.status(401).json({ status: 'error', reason: 'unauthorized' });
+      }
+      return;
+    }
+    if (!operation) {
+      res.status(404).json({ status: 'error', reason: 'operation-not-found' });
+      return;
+    }
+    res.json({ protocolVersion: 1, requestId, operation });
+  } catch (error) {
+    sendManagerError(res, error);
+  }
+});
+
 app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
   const auth = authenticate(req, res);
   if (!auth) return;
@@ -183,6 +244,7 @@ app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
       request.operation,
       request.payload,
       REMOTE_OPERATION_REGISTRY[request.operation].write,
+      request.requestId,
     );
     const encoded = JSON.stringify(result);
     if (Buffer.byteLength(encoded) > 4 * 1024 * 1024) {
@@ -212,32 +274,34 @@ app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
       return;
     }
     const message = error instanceof Error ? error.message : '';
-    const code =
-      message === 'remote-operation-indeterminate'
-        ? 'operation-indeterminate'
-        : message === 'remote-operation-timeout'
-          ? 'operation-timeout'
-          : message === 'remote-operation-not-dispatched'
-            ? 'operation-not-dispatched'
-            : message === 'remote-session-invalid'
-              ? 'unauthorized'
-              : message === 'remote-request-too-large'
-                ? 'request-too-large'
-                : message === 'remote-queue-full'
-                  ? 'queue-full'
-                  : message === 'remote-result-too-large'
-                    ? 'result-too-large'
-                    : 'operation-failed';
+    const remoteErrorCodes: Record<string, string> = {
+      'remote-operation-indeterminate': 'operation-indeterminate',
+      'remote-operation-interrupted': 'operation-interrupted',
+      'remote-operation-in-progress': 'operation-in-progress',
+      'remote-operation-result-expired': 'operation-result-expired',
+      'remote-operation-timeout': 'operation-timeout',
+      'remote-operation-not-dispatched': 'operation-not-dispatched',
+      'remote-session-invalid': 'unauthorized',
+      'remote-request-too-large': 'request-too-large',
+      'remote-queue-full': 'queue-full',
+      'remote-result-too-large': 'result-too-large',
+      'remote-request-id-conflict': 'request-id-conflict',
+    };
+    const code = remoteErrorCodes[message] ?? 'operation-failed';
     const status =
       code === 'unauthorized'
         ? 401
-        : code === 'request-too-large' || code === 'result-too-large'
-          ? 413
-          : code === 'queue-full'
-            ? 429
-            : code === 'operation-timeout'
-              ? 504
-              : 503;
+        : code === 'request-id-conflict'
+          ? 409
+          : code === 'operation-result-expired'
+            ? 410
+            : code === 'request-too-large' || code === 'result-too-large'
+              ? 413
+              : code === 'queue-full'
+                ? 429
+                : code === 'operation-timeout'
+                  ? 504
+                  : 503;
     res.status(status).json({
       protocolVersion: 1,
       requestId:
