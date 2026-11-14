@@ -76,7 +76,7 @@
   "scripts": {
     "start": "yarn build && node build/app.js",
     "start-monitor": "nodemon --exec 'yarn build && node build/app.js' --ignore './build/**/*' --ext 'ts,js' build/app.js",
-    "build": "vite build",
+    "build": "yarn workspace @actual-app/api build && vite build",
     "typecheck": "tsgo -b && tsc-strict",
     "test": "NODE_ENV=test NODE_OPTIONS='--experimental-vm-modules --trace-warnings' vitest --run",
     "db:migrate": "yarn build && cross-env NODE_ENV=development node build/scripts/run-migrations.js up",
@@ -88,6 +88,7 @@
     "health-check": "yarn build && node build/scripts/health-check.js"
   },
   "dependencies": {
+    "@actual-app/api": "workspace:*",
     "@actual-app/crdt": "workspace:*",
     "@actual-app/web": "workspace:*",
     "akahu": "^2.6.0",

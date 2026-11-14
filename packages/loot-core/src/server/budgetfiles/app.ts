@@ -74,6 +74,7 @@ export type BudgetFileHandlers = {
   'delete-budget': typeof deleteBudget;
   'duplicate-budget': typeof duplicateBudget;
   'create-budget': typeof createBudget;
+  'create-remote-budget': typeof createRemoteBudget;
   'import-budget': typeof importBudget;
   'export-budget': typeof exportBudget;
   'upload-file-web': typeof uploadFileWeb;
@@ -98,6 +99,7 @@ app.method('close-budget', closeBudget);
 app.method('delete-budget', deleteBudget);
 app.method('duplicate-budget', duplicateBudget);
 app.method('create-budget', createBudget);
+app.method('create-remote-budget', createRemoteBudget);
 app.method('import-budget', importBudget);
 app.method('export-budget', exportBudget);
 app.method('upload-file-web', uploadFileWeb);
@@ -553,6 +555,37 @@ async function createBudget({
   return {};
 }
 
+/** Internal worker-only empty provisioner. Never registered as a network RPC. */
+async function createRemoteBudget({ id }: { id: string }) {
+  if (process.env.ACTUAL_HOSTED_RUNTIME !== '1') {
+    throw new Error('remote budget provisioning is worker-only');
+  }
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id)) {
+    throw new Error('invalid remote budget identity');
+  }
+  if (await fs.exists(fs.getBudgetDir(id))) {
+    throw new Error('remote budget identity already exists');
+  }
+  const budgetDir = fs.getBudgetDir(id);
+  try {
+    await fs.mkdir(budgetDir);
+    await fs.copyFile(fs.bundledDatabasePath, fs.join(budgetDir, 'db.sqlite'));
+    await fs.writeFile(
+      fs.join(budgetDir, 'metadata.json'),
+      JSON.stringify(prefs.getDefaultPrefs(id, 'Remote budget')),
+    );
+    const { error } = await _loadBudget(id);
+    if (error) {
+      await closeBudget();
+      throw new Error(`remote budget creation failed: ${error}`);
+    }
+  } catch (error) {
+    await fs.removeDirRecursively(budgetDir);
+    throw error;
+  }
+  return { id };
+}
+
 async function importBudget({
   filepath,
   buffer,
@@ -763,7 +796,12 @@ async function _loadBudget(id: Budget['id']): Promise<{
     await prefs.savePrefs({ resetClock: false });
   }
 
-  if (!Platform.isBrowser && process.env.NODE_ENV !== 'test') {
+  const isHostedRuntime = process.env.ACTUAL_HOSTED_RUNTIME === '1';
+  if (
+    !Platform.isBrowser &&
+    process.env.NODE_ENV !== 'test' &&
+    !isHostedRuntime
+  ) {
     startBackupService(id);
   }
 
@@ -793,7 +831,9 @@ async function _loadBudget(id: Budget['id']): Promise<{
   clearUndo();
 
   // Ensure that syncing is enabled
-  if (process.env.NODE_ENV !== 'test') {
+  if (isHostedRuntime) {
+    setSyncingMode('offline');
+  } else if (process.env.NODE_ENV !== 'test') {
     if (id === DEMO_BUDGET_ID) {
       setSyncingMode('disabled');
     } else {

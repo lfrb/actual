@@ -22,6 +22,7 @@ import * as secretApp from './app-secrets';
 import * as simpleFinApp from './app-simplefin/app-simplefin';
 import * as syncApp from './app-sync';
 import { config } from './load-config';
+import { remoteModeHandlers } from './remote-mode';
 import { listen } from './util/server-listen';
 
 const debugSensitive = createDebug('actual-sensitive:server');
@@ -64,6 +65,7 @@ app.use(
 );
 
 app.use('/sync', syncApp.handlers);
+app.use('/remote', remoteModeHandlers);
 app.use('/account', accountApp.handlers);
 app.use('/api-keys', apiKeysApp.handlers);
 app.use('/oauth', oauthApp.handlers);

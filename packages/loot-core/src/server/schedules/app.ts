@@ -907,6 +907,8 @@ async function advanceSchedulesAfterSync(syncSuccess: boolean) {
 }
 
 app.events.on('sync', ({ type }) => {
+  // Hosted remote budgets do not run implicit scheduled transaction producers.
+  if (process.env.ACTUAL_HOSTED_RUNTIME === '1') return;
   if (advancingAfterSync) {
     return;
   }

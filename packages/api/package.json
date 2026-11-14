@@ -26,6 +26,7 @@
       },
       "default": "./dist/index.js"
     },
+    "./hosted-worker": "./dist/hosted-worker.js",
     "./models": {
       "types": "./@types/models.d.ts",
       "development": "./models.ts",
@@ -42,6 +43,7 @@
         },
         "default": "./dist/index.js"
       },
+      "./hosted-worker": "./dist/hosted-worker.js",
       "./models": {
         "types": "./@types/models.d.ts",
         "default": "./dist/models.js"
@@ -49,7 +51,7 @@
     }
   },
   "scripts": {
-    "build": "vite build && tsgo --emitDeclarationOnly && vite build --config vite.browser.config.mts",
+    "build": "vite build && tsgo --emitDeclarationOnly && vite build --config vite.hosted-worker.config.mts && vite build --config vite.browser.config.mts",
     "test": "vitest --run",
     "e2e": "playwright test",
     "typecheck": "tsgo -b && tsc-strict"
