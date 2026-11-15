@@ -1,7 +1,8 @@
 # Remote budget v1 contracts
 
 This document records the server-owned mode metadata, protocol/bootstrap shape,
-worker/session lifecycle, bounded financial RPC, and durable operation journal.
+worker/session lifecycle, bounded financial RPC, durable operation journal, and
+transaction creation outbox.
 SDK remote activation is not implemented here.
 
 ## Protocol
@@ -149,6 +150,64 @@ dispatch, where a commit may or may not have happened; clients must query status
 and must not retry automatically. `operation-interrupted` reports that durable
 commit evidence exists or startup recovered a still-running journal row. It
 also never triggers a retry.
+
+## Transaction creation outbox
+
+Creation candidates are recorded in `remote_event_candidates` inside the same
+SQLite transaction as financial writes and journal commit evidence. Candidate
+storage failure rolls back that financial commit. Bootstrap emits no events;
+after bootstrap, hosted writes without an operation context are rejected.
+Conventional local and synced budgets do not initialize these tables.
+
+At operation completion, the worker rereads live rows and atomically stores
+immutable `transactions.created` payloads in `remote_outbox` with the journal's
+terminal status. Startup recovery does the same for interrupted operations. If
+final event storage fails, the terminal state is not committed; candidates remain
+available for recovery. Unknown transaction shapes fail closed rather than
+discarding candidates. A caught postcommit exception quarantines the worker so
+subsequent requests use a newly loaded engine.
+
+Updates, restoration of an existing tombstoned row, matching import replays, old
+or deferred messages, and rows created then removed within the operation emit
+no creation. A rule-created split emits its parent; a rule-deleted row emits
+nothing. When merging, only a surviving newly created root can emit an event.
+
+Payloads contain newly created logical root IDs. Split children normalize to
+their parent. Transfer-linked new roots share an event: a simple new transfer
+has two IDs; a new split with multiple transfer legs can have its parent plus
+several counterpart IDs. A preexisting linked root is not announced as new.
+Missing or nonreciprocal transfer legs appear in `unpairedTransferIds`, using
+the logical root ID even when the incomplete leg is a split child. This marker
+describes the committed relationship, including when the caller disabled
+automatic transfer creation.
+
+```json
+{
+  "version": 1,
+  "eventId": "evt_<sha256>",
+  "type": "transactions.created",
+  "budgetId": "opaque-budget-id",
+  "operationId": "client-request-id",
+  "operationStatus": "interrupted",
+  "occurredAt": "2026-11-14T20:00:00.000Z",
+  "transactionIds": ["committed-source-id"],
+  "unpairedTransferIds": ["committed-source-id"]
+}
+```
+
+Event IDs include the budget, credential identity, request ID, and sorted logical
+root IDs. They remain stable across retries and restarts; consumers deduplicate
+by `eventId`. Payloads remain unchanged after later edits or deletion of their
+transactions. They contain IDs rather than transaction amounts or payees.
+
+The tables are server-only and excluded from CRDT sync. Each outbox record starts
+as `pending` with zero attempts and nullable retry, last-attempt, and delivery
+timestamps. Internal worker IPC can inspect up to 100 records in a page bounded
+to 3 MiB; each event payload is limited to 256 KiB. There is no public outbox RPC,
+delivery scheduler, acknowledgment handler, or event purge in this step. HTTP
+delivery, retries, retention, and webhook configuration are deferred to Step 7.
+
+## Errors
 
 Errors use stable codes: `unsupported-protocol-version`, `unsupported-operation`,
 `invalid-request`, `unauthorized`, `forbidden`, `budget-not-found`,

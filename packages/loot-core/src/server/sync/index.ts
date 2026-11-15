@@ -25,8 +25,12 @@ import {
 } from '#server/mutators';
 import { postBinary } from '#server/post';
 import * as prefs from '#server/prefs';
-import { getRemoteOperationContext } from '#server/remote-operation-context';
+import {
+  getRemoteOperationContext,
+  isHostedBudgetActive,
+} from '#server/remote-operation-context';
 import { recordRemoteOperationCommit } from '#server/remote-operation-journal';
+import { recordRemoteEventCandidates } from '#server/remote-operation-outbox';
 import { getServer } from '#server/server-config';
 import * as sheet from '#server/sheet';
 import { resolveName } from '#server/spreadsheet/util';
@@ -145,7 +149,9 @@ function apply(
     throw new SyncError('invalid-schema', {
       error: { message: 'Unknown value format: ' + value.raw, stack: '' },
       query: {
-        sql: `INSERT INTO ${quoteSqlId(dataset)} (id, ${quoteSqlId(column)}) VALUES (?, ?)`,
+        sql: `INSERT INTO ${quoteSqlId(dataset)} (id, ${quoteSqlId(
+          column,
+        )}) VALUES (?, ?)`,
         params: [row, value.raw],
       },
     });
@@ -154,12 +160,16 @@ function apply(
     try {
       if (prev) {
         query = {
-          sql: `UPDATE ${quoteSqlId(dataset)} SET ${quoteSqlId(column)} = ? WHERE id = ?`,
+          sql: `UPDATE ${quoteSqlId(dataset)} SET ${quoteSqlId(
+            column,
+          )} = ? WHERE id = ?`,
           params: [value, row],
         };
       } else {
         query = {
-          sql: `INSERT INTO ${quoteSqlId(dataset)} (id, ${quoteSqlId(column)}) VALUES (?, ?)`,
+          sql: `INSERT INTO ${quoteSqlId(dataset)} (id, ${quoteSqlId(
+            column,
+          )}) VALUES (?, ?)`,
           params: [row, value],
         };
       }
@@ -555,7 +565,30 @@ async function _applyMessages(messages: Message[], isReceived = false) {
     // with the financial messages. A crash can therefore distinguish a
     // dispatched write from one that reached a durable commit.
     const remoteOperation = getRemoteOperationContext();
+    if (isHostedBudgetActive() && !remoteOperation) {
+      throw new Error('hosted-operation-context-required');
+    }
     if (remoteOperation) {
+      const transactionIds = [
+        ...new Set(
+          messages
+            .filter(
+              msg =>
+                msg.dataset === 'transactions' &&
+                !msg.old &&
+                !deferredMessages.has(msg),
+            )
+            .map(msg => msg.row),
+        ),
+      ];
+      recordRemoteEventCandidates(
+        remoteOperation,
+        transactionIds.map(id => ({
+          id,
+          previous: getIn(oldData, ['transactions', id]),
+          next: getIn(newData, ['transactions', id]),
+        })),
+      );
       const newIds = messages
         .filter(
           msg =>

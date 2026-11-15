@@ -266,6 +266,28 @@ describe('remote session authorization', () => {
         },
       })
       .expect(200);
+    const importedOutbox = await remoteWorkerManager.inspectOutbox<{
+      items: Array<{
+        operationId: string;
+        payload: { transactionIds: string[] };
+      }>;
+      hasMore: boolean;
+    }>(
+      budget.id,
+      budget.id,
+      owner,
+      createHash('sha256').update(token).digest('hex'),
+      100,
+      () => true,
+    );
+    expect(
+      importedOutbox.items.filter(item => item.operationId === 'import-1'),
+    ).toHaveLength(1);
+    expect(
+      importedOutbox.items.filter(
+        item => item.operationId === 'import-match-1',
+      ),
+    ).toHaveLength(0);
     const transactions = await request(server)
       .post(rpcUrl)
       .set('Authorization', `Bearer ${token}`)
@@ -390,6 +412,24 @@ describe('remote session authorization', () => {
       })
       .expect(200);
     expect(split.body.result).toBeDefined();
+    const splitOutbox = await remoteWorkerManager.inspectOutbox<{
+      items: Array<{
+        operationId: string;
+        payload: { transactionIds: string[] };
+      }>;
+      hasMore: boolean;
+    }>(
+      budget.id,
+      budget.id,
+      owner,
+      createHash('sha256').update(token).digest('hex'),
+      100,
+      () => true,
+    );
+    const splitEvent = splitOutbox.items.find(
+      item => item.operationId === 'split-1',
+    );
+    expect(splitEvent?.payload.transactionIds).toHaveLength(1);
     const splitList = await request(server)
       .post(rpcUrl)
       .set('Authorization', `Bearer ${token}`)

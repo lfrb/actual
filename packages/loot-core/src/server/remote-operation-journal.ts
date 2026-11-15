@@ -1,4 +1,8 @@
 import * as db from '#server/db';
+import {
+  finalizeRemoteOperationEvents,
+  initializeRemoteEventOutbox,
+} from '#server/remote-operation-outbox';
 
 const MAX_RETAINED_RESULT_BYTES = 64 * 1024;
 
@@ -43,15 +47,44 @@ export function initializeRemoteOperationJournal(budgetId: string) {
     updated_at TEXT NOT NULL,
     PRIMARY KEY (budget_id, credential_id, request_id)
   )`);
+  initializeRemoteEventOutbox();
 
   // The worker holds the exclusive writer lock before this recovery runs.
-  db.runQuery(
-    `UPDATE remote_operations SET status = 'interrupted',
-        error_code = 'operation-interrupted', updated_at = ?
-      WHERE budget_id = ? AND status = 'running'`,
-    [new Date().toISOString(), budgetId],
-  );
-  pruneRemoteOperationResults(budgetId);
+  db.transaction(() => {
+    const running = db.runQuery<{
+      credential_id: string;
+      request_id: string;
+    }>(
+      `SELECT credential_id, request_id FROM remote_operations
+        WHERE budget_id = ? AND status = 'running'`,
+      [budgetId],
+      true,
+    );
+    for (const operation of running) {
+      finalizeRemoteOperationEvents({
+        budgetId,
+        credentialId: operation.credential_id,
+        requestId: operation.request_id,
+        operationStatus: 'interrupted',
+      });
+      const result = db.runQuery(
+        `UPDATE remote_operations SET status = 'interrupted',
+            error_code = 'operation-interrupted', updated_at = ?
+          WHERE budget_id = ? AND credential_id = ? AND request_id = ?
+            AND status = 'running'`,
+        [
+          new Date().toISOString(),
+          budgetId,
+          operation.credential_id,
+          operation.request_id,
+        ],
+      );
+      if (result.changes !== 1) {
+        throw new Error('remote-operation-journal-recovery-failed');
+      }
+    }
+    pruneRemoteOperationResults(budgetId);
+  });
 }
 
 export function beginRemoteOperation(args: {
@@ -133,6 +166,12 @@ export function succeedRemoteOperation(args: {
     new TextEncoder().encode(resultJson).byteLength <=
     MAX_RETAINED_RESULT_BYTES;
   db.transaction(() => {
+    finalizeRemoteOperationEvents({
+      budgetId: args.budgetId,
+      credentialId: args.credentialId,
+      requestId: args.requestId,
+      operationStatus: 'succeeded',
+    });
     const update = db.runQuery(
       `UPDATE remote_operations SET status = 'succeeded', result_json = ?,
           result_expired = ?,
@@ -166,22 +205,32 @@ export function failRemoteOperation(args: {
   const status = row.commit_count > 0 ? 'interrupted' : 'failed';
   const errorCode =
     status === 'interrupted' ? 'operation-interrupted' : args.errorCode;
-  const update = db.runQuery(
-    `UPDATE remote_operations SET status = ?, error_code = ?, updated_at = ?
-      WHERE budget_id = ? AND credential_id = ? AND request_id = ?
-        AND status = 'running'`,
-    [
-      status,
-      errorCode,
-      new Date().toISOString(),
-      args.budgetId,
-      args.credentialId,
-      args.requestId,
-    ],
-  );
-  if (update.changes !== 1) {
-    throw new Error('remote-operation-journal-update-failed');
-  }
+  db.transaction(() => {
+    if (status === 'interrupted') {
+      finalizeRemoteOperationEvents({
+        budgetId: args.budgetId,
+        credentialId: args.credentialId,
+        requestId: args.requestId,
+        operationStatus: 'interrupted',
+      });
+    }
+    const update = db.runQuery(
+      `UPDATE remote_operations SET status = ?, error_code = ?, updated_at = ?
+        WHERE budget_id = ? AND credential_id = ? AND request_id = ?
+          AND status = 'running'`,
+      [
+        status,
+        errorCode,
+        new Date().toISOString(),
+        args.budgetId,
+        args.credentialId,
+        args.requestId,
+      ],
+    );
+    if (update.changes !== 1) {
+      throw new Error('remote-operation-journal-update-failed');
+    }
+  });
   return errorCode;
 }
 

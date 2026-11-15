@@ -6,6 +6,7 @@ export type RemoteOperationContext = {
 };
 
 let currentContext: RemoteOperationContext | null = null;
+let hostedBudgetActive = false;
 
 export function setRemoteOperationContext(
   context: RemoteOperationContext | null,
@@ -15,4 +16,12 @@ export function setRemoteOperationContext(
 
 export function getRemoteOperationContext() {
   return currentContext;
+}
+
+export function setHostedBudgetActive(active: boolean) {
+  hostedBudgetActive = active;
+}
+
+export function isHostedBudgetActive() {
+  return hostedBudgetActive;
 }

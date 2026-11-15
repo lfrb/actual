@@ -186,6 +186,45 @@ export class RemoteWorkerManager {
     }
   }
 
+  async inspectOutbox<T>(
+    fileId: string,
+    engineDirectoryId: string,
+    userId: string,
+    credentialId: string,
+    limit: number,
+    validateAtDispatch: () => boolean,
+  ): Promise<T> {
+    if (!validateAtDispatch()) throw new Error('remote-session-invalid');
+    const worker = await this.getWorker(fileId, engineDirectoryId);
+    if (!validateAtDispatch()) throw new Error('remote-session-invalid');
+    this.expireIdleSessions(worker);
+    if (worker.sessions.size >= this.maxSessionsPerBudget) {
+      throw new Error('remote-session-limit');
+    }
+    const sessionId = randomUUID();
+    worker.sessions.set(sessionId, {
+      id: sessionId,
+      userId,
+      credentialId,
+      lastUsedAt: Date.now(),
+    });
+    this.scheduleIdleCheck(fileId, worker);
+    try {
+      return await this.dispatch<T>(
+        fileId,
+        sessionId,
+        validateAtDispatch,
+        '__outbox_inspect',
+        { limit },
+        false,
+        randomUUID(),
+      );
+    } finally {
+      worker.sessions.delete(sessionId);
+      this.scheduleIdleCheck(fileId, worker);
+    }
+  }
+
   async closeSession(fileId: string, sessionId: string) {
     const worker = this.workers.get(fileId);
     if (!worker) return;
@@ -239,15 +278,21 @@ export class RemoteWorkerManager {
               budgetId: fileId,
               credentialId: session.credentialId,
             }
-          : {
-              type: 'rpc',
-              id,
-              requestId,
-              budgetId: fileId,
-              credentialId: session.credentialId,
-              operation,
-              payload,
-            };
+          : operation === '__outbox_inspect'
+            ? {
+                type: 'outbox-inspect',
+                id,
+                limit: (payload as { limit: number }).limit,
+              }
+            : {
+                type: 'rpc',
+                id,
+                requestId,
+                budgetId: fileId,
+                credentialId: session.credentialId,
+                operation,
+                payload,
+              };
       if (Buffer.byteLength(JSON.stringify(message)) > MAX_RPC_BYTES) {
         throw new Error('remote-request-too-large');
       }
@@ -442,11 +487,13 @@ export class RemoteWorkerManager {
         worker.rejectReady(new Error(String(message.message)));
       } else if (
         (message.type === 'rpc-result' ||
-          message.type === 'operation-status-result') &&
+          message.type === 'operation-status-result' ||
+          message.type === 'outbox-inspect-result') &&
         typeof message.id === 'string'
       ) {
         const pending = worker.pending.get(message.id);
         if (!pending) return;
+        if (message.fatal === true) worker.unavailable = true;
         clearTimeout(pending.timer);
         worker.pending.delete(message.id);
         if (Buffer.byteLength(JSON.stringify(message)) > 4 * MAX_RPC_BYTES) {

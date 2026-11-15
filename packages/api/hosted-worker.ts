@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import { init, lib } from '@actual-app/core/server/main';
-import { setRemoteOperationContext } from '@actual-app/core/server/remote-operation-context';
+import {
+  setHostedBudgetActive,
+  setRemoteOperationContext,
+} from '@actual-app/core/server/remote-operation-context';
 import {
   beginRemoteOperation,
   failRemoteOperation,
@@ -10,14 +13,26 @@ import {
   succeedRemoteOperation,
 } from '@actual-app/core/server/remote-operation-journal';
 import {
+  inspectRemoteOutboxPage,
+  setRemoteEventIdFactory,
+} from '@actual-app/core/server/remote-operation-outbox';
+import {
   parseRemoteCalendarDate,
   parseRemoteV1Request,
   REMOTE_OPERATION_REGISTRY,
 } from '@actual-app/core/shared/remote-v1-contract';
 import type { Handlers } from '@actual-app/core/types/handlers';
 
-function send(message: Record<string, unknown>) {
-  if (process.send) process.send(message);
+function send(
+  message: Record<string, unknown>,
+  callback?: (error: Error | null) => void,
+) {
+  if (process.send) {
+    if (callback) process.send(message, callback);
+    else process.send(message);
+  } else {
+    callback?.(new Error('worker-ipc-disconnected'));
+  }
 }
 
 let loaded = false;
@@ -35,6 +50,7 @@ async function close() {
   }
   stopping = true;
   await rpcQueue;
+  setHostedBudgetActive(false);
   if (loaded) {
     try {
       await lib.send('close-budget');
@@ -59,7 +75,9 @@ process.on('message', message => {
     message &&
     typeof message === 'object' &&
     'type' in message &&
-    (message.type === 'rpc' || message.type === 'operation-status')
+    (message.type === 'rpc' ||
+      message.type === 'operation-status' ||
+      message.type === 'outbox-inspect')
   ) {
     const next = rpcQueue.then(() => dispatchRpc(message));
     rpcQueue = next.then(
@@ -98,12 +116,17 @@ async function start() {
     throw new Error(`engine-load-${String(result.error)}`);
   }
   loaded = true;
+  setRemoteEventIdFactory(
+    identity => `evt_${createHash('sha256').update(identity).digest('hex')}`,
+  );
   initializeRemoteOperationJournal(budgetId);
+  setHostedBudgetActive(true);
   send({ type: 'ready', pid: process.pid });
 }
 
 async function dispatchRpc(message: unknown) {
   if (!process.send || !message || typeof message !== 'object') return;
+  if (stopping) return;
   const value = message as Record<string, unknown>;
   const id = typeof value.id === 'string' ? value.id : '';
   if (value.type === 'operation-status') {
@@ -122,6 +145,24 @@ async function dispatchRpc(message: unknown) {
           ? getRemoteOperationStatus(budgetId, credentialId, requestId)
           : null,
     });
+    return;
+  }
+  if (value.type === 'outbox-inspect') {
+    try {
+      send({
+        type: 'outbox-inspect-result',
+        id,
+        result: inspectRemoteOutboxPage(
+          typeof value.limit === 'number' ? value.limit : 100,
+        ),
+      });
+    } catch {
+      send({
+        type: 'rpc-result',
+        id,
+        error: { code: 'outbox-inspection-failed' },
+      });
+    }
     return;
   }
   const requestId = typeof value.requestId === 'string' ? value.requestId : '';
@@ -253,15 +294,33 @@ async function dispatchRpc(message: unknown) {
               error.message === 'remote-result-too-large'
             ? 'result-too-large'
             : 'operation-failed';
+    let quarantine = false;
     if (writeOperation && credentialId && requestId && budgetId && operation) {
-      code = failRemoteOperation({
-        budgetId,
-        credentialId,
-        requestId,
-        errorCode: code,
-      });
+      try {
+        code = failRemoteOperation({
+          budgetId,
+          credentialId,
+          requestId,
+          errorCode: code,
+        });
+        quarantine = code === 'operation-interrupted';
+      } catch {
+        // Leave the running journal and candidates for startup recovery. This
+        // process may have stale projections after a durable financial commit.
+        code = 'operation-interrupted';
+        quarantine = true;
+      }
     }
-    send({ type: 'rpc-result', id, error: { code } });
+    const interrupted = code === 'operation-interrupted';
+    if (quarantine || interrupted) {
+      stopping = true;
+      setHostedBudgetActive(false);
+      send({ type: 'rpc-result', id, error: { code }, fatal: true }, () =>
+        process.exit(1),
+      );
+    } else {
+      send({ type: 'rpc-result', id, error: { code } });
+    }
   } finally {
     setRemoteOperationContext(null);
   }
