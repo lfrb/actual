@@ -157,7 +157,32 @@ test('reads existing screens without downloads or writes, refreshes external cha
   await page.getByTestId('account-balance').click();
   const clearedTotal = page.getByText(/^Cleared total:/);
   await expect(clearedTotal).toContainText('7,400.00');
+  // Let the server commit the change, then drop its response to the browser.
+  const rpcPattern = '**/remote/*/*/rpc';
+  let droppedRequestId: string | undefined;
+  await page.context().route(rpcPattern, async route => {
+    const body = route.request().postDataJSON();
+    if (
+      body?.operation !== 'ui.transaction-cleared.update' ||
+      droppedRequestId
+    ) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    droppedRequestId = String(body.requestId);
+    await route.abort('connectionreset');
+  });
+  const confirmed = page.waitForResponse(
+    response =>
+      response.request().method() === 'GET' &&
+      response.url().endsWith(`/operations/${droppedRequestId ?? ''}`) &&
+      response.ok(),
+  );
   await markUncleared.click();
+  await confirmed;
+  await page.context().unroute(rpcPattern);
   await expect(markCleared).toBeVisible();
   await expect(clearedTotal).toContainText('7,442.50');
   await markCleared.click();
