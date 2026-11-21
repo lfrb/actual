@@ -82,16 +82,16 @@ export function Search({
           width: '100%',
           '::placeholder': {
             color: highContrastPlaceholder
-              ? theme.formInputText
+              ? theme.tableText
               : theme.formInputTextPlaceholder,
-            transition: 'color .25s',
+            transition: highContrastPlaceholder ? 'none' : 'color .25s',
           },
           '&[data-focused]': isInModal
             ? {}
             : {
                 '::placeholder': {
                   color: highContrastPlaceholder
-                    ? theme.formInputText
+                    ? theme.tableText
                     : theme.formInputTextPlaceholderSelected,
                 },
               },

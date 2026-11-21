@@ -50,9 +50,15 @@ test('reads existing screens without downloads or writes, refreshes external cha
   await page.getByText('Fruiterie Vert Pomme', { exact: true }).dblclick();
   await expect(page.getByRole('combobox')).toHaveCount(0);
   await page.evaluate(() => window.Actual.setTheme('light'));
-  await page.screenshot({ path: 'test-results/remote-ui-light.png' });
+  await page.screenshot({
+    path: 'test-results/remote-ui-light.png',
+    animations: 'disabled',
+  });
   await page.evaluate(() => window.Actual.setTheme('dark'));
-  await page.screenshot({ path: 'test-results/remote-ui-dark.png' });
+  await page.screenshot({
+    path: 'test-results/remote-ui-dark.png',
+    animations: 'disabled',
+  });
   await page.getByRole('link', { name: /Savings/ }).click();
   await expect(page.getByText('Interest', { exact: true })).toBeVisible();
 
