@@ -725,6 +725,39 @@ handlers['api/transactions-get'] = async function ({
   return data;
 };
 
+handlers['api/transaction-cleared-update'] = withMutation(async function ({
+  id,
+  cleared,
+}) {
+  checkFileOpen();
+  const rows = await db.all<{
+    id: string;
+    isChild: number | null;
+    cleared: number | null;
+    reconciled: number | null;
+  }>(
+    `SELECT id, isChild, cleared, reconciled FROM transactions
+     WHERE (id = ? OR (isChild = 1 AND parent_id = ?))
+       AND COALESCE(tombstone, 0) = 0`,
+    [id, id],
+  );
+  const transaction = rows.find(row => row.id === id);
+  if (!transaction) return 'not-found' as const;
+  if (transaction.isChild) return 'split-child' as const;
+  if (rows.some(row => row.reconciled)) return 'reconciled' as const;
+
+  // A split's children carry the same clearing status as its parent.
+  // Transfer counterparts clear independently in their own accounts.
+  await batchMessages(async () => {
+    for (const row of rows) {
+      if (Boolean(row.cleared) !== cleared) {
+        await db.updateTransaction({ id: row.id, cleared });
+      }
+    }
+  });
+  return 'updated' as const;
+});
+
 handlers['api/transaction-note-update'] = withMutation(async function ({
   id,
   fields: { notes },

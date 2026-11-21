@@ -8,6 +8,7 @@ import { getAccountDb } from './account-db';
 import { File, FilesService } from './app-sync/services/files-service';
 import { config } from './load-config';
 import {
+  isRemoteUiWriteScope,
   parseRemoteV1Request,
   REMOTE_OPERATION_REGISTRY,
   RemoteProtocolError,
@@ -41,7 +42,7 @@ app.post('/session/open', async (req, res) => {
     (req.body.readOnly !== undefined &&
       typeof req.body.readOnly !== 'boolean') ||
     (req.body.writeScope !== undefined &&
-      (req.body.writeScope !== 'transaction-notes' ||
+      (!isRemoteUiWriteScope(req.body.writeScope) ||
         req.body.readOnly === true))
   ) {
     res.status(400).json({ status: 'error', reason: 'invalid-request' });

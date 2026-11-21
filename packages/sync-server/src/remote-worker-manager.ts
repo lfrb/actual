@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import type { RemoteUiWriteScope } from './remote-v1-contract';
 import { atomicWriteFile } from './util/atomic-write';
 
 const START_TIMEOUT_MS = 20_000;
@@ -22,7 +23,7 @@ export type RemoteWorkerSession = {
   userId: string;
   credentialId: string;
   readOnly: boolean;
-  writeScope?: 'transaction-notes';
+  writeScope?: RemoteUiWriteScope;
   lastUsedAt: number;
 };
 
@@ -281,8 +282,12 @@ export class RemoteWorkerManager {
       }
       if (
         isWrite &&
-        session.writeScope === 'transaction-notes' &&
-        operation !== 'ui.transaction-note.update'
+        session.writeScope &&
+        operation !== 'ui.transaction-note.update' &&
+        !(
+          session.writeScope === 'transaction-details' &&
+          operation === 'ui.transaction-cleared.update'
+        )
       ) {
         throw new Error('remote-write-outside-scope');
       }

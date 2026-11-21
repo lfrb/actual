@@ -138,6 +138,11 @@ export type ApiHandlers = {
     endDate?: string;
   }) => Promise<TransactionEntity[]>;
 
+  'api/transaction-cleared-update': (arg: {
+    id: TransactionEntity['id'];
+    cleared: boolean;
+  }) => Promise<'updated' | 'not-found' | 'reconciled' | 'split-child'>;
+
   'api/transaction-note-update': (arg: {
     id: TransactionEntity['id'];
     fields: { notes: string };

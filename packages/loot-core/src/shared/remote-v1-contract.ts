@@ -49,6 +49,14 @@ export const REMOTE_CAPABILITIES = {
   ],
 } as const;
 
+export type RemoteUiWriteScope = 'transaction-notes' | 'transaction-details';
+
+export function isRemoteUiWriteScope(
+  value: unknown,
+): value is RemoteUiWriteScope {
+  return value === 'transaction-notes' || value === 'transaction-details';
+}
+
 export const REMOTE_OPERATION_REGISTRY = {
   'ui.accounts': { handler: 'accounts-get', write: false, payload: [] },
   'ui.categories': { handler: 'get-categories', write: false, payload: [] },
@@ -66,6 +74,11 @@ export const REMOTE_OPERATION_REGISTRY = {
     payload: ['sheetName', 'name'],
   },
   'ui.note': { handler: 'notes-get', write: false, payload: ['id'] },
+  'ui.transaction-cleared.update': {
+    handler: 'api/transaction-cleared-update',
+    write: true,
+    payload: ['id', 'cleared'],
+  },
   'ui.transaction-note.update': {
     handler: 'api/transaction-note-update',
     write: true,
@@ -627,6 +640,9 @@ function validatePayload(
         account_group_id: 'id-null',
       })
     );
+  }
+  if (operation === 'ui.transaction-cleared.update') {
+    return validId(payload.id) && typeof payload.cleared === 'boolean';
   }
   if (operation === 'ui.transaction-note.update') {
     const fields = payload.fields;

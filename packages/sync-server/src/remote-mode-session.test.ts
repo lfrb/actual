@@ -328,31 +328,28 @@ describe('remote session authorization', () => {
         item => item.operationId === 'import-match-1',
       ),
     ).toHaveLength(0);
-    const noteSession = await request(server)
-      .post('/remote/session/open')
-      .set('Authorization', `Bearer ${token}`)
-      .send({
-        protocolVersion: 1,
-        budgetId: budget.id,
-        writeScope: 'transaction-notes',
-      })
-      .expect(201);
-    expect(noteSession.body).toMatchObject({
-      readOnly: false,
-      writeScope: 'transaction-notes',
-    });
-    const noteSessionId = noteSession.body.sessionId as string;
-    openedSessions.push({ budgetId: budget.id, sessionId: noteSessionId });
-    const noteRpc = (operation: string, payload: object) =>
-      request(server)
-        .post(`/remote/${budget.id}/${noteSessionId}/rpc`)
+    async function openScopedSession(writeScope: string) {
+      const opened = await request(server)
+        .post('/remote/session/open')
         .set('Authorization', `Bearer ${token}`)
-        .send({
-          protocolVersion: 1,
-          requestId: randomUUID(),
-          operation,
-          payload,
-        });
+        .send({ protocolVersion: 1, budgetId: budget.id, writeScope })
+        .expect(201);
+      expect(opened.body).toMatchObject({ readOnly: false, writeScope });
+      const sessionId = opened.body.sessionId as string;
+      openedSessions.push({ budgetId: budget.id, sessionId });
+      return (operation: string, payload: object) =>
+        request(server)
+          .post(`/remote/${budget.id}/${sessionId}/rpc`)
+          .set('Authorization', `Bearer ${token}`)
+          .send({
+            protocolVersion: 1,
+            requestId: randomUUID(),
+            operation,
+            payload,
+          });
+    }
+    const noteRpc = await openScopedSession('transaction-notes');
+    const detailsRpc = await openScopedSession('transaction-details');
     const transactions = await request(server)
       .post(rpcUrl)
       .set('Authorization', `Bearer ${token}`)
@@ -364,6 +361,19 @@ describe('remote session authorization', () => {
       })
       .expect(200);
     const transactionId = transactions.body.result[0].id as string;
+    const scopedDenied = await noteRpc('ui.transaction-cleared.update', {
+      id: transactionId,
+      cleared: false,
+    }).expect(403);
+    expect(scopedDenied.body.error.code).toBe('write-outside-scope');
+    await detailsRpc('transactions.update', {
+      id: transactionId,
+      fields: { amount: -1 },
+    }).expect(403);
+    await detailsRpc('ui.transaction-cleared.update', {
+      id: transactionId,
+      cleared: 1,
+    }).expect(400);
     const refusedUpdate = await noteRpc('transactions.update', {
       id: transactionId,
       fields: { amount: -1 },
@@ -524,6 +534,7 @@ describe('remote session authorization', () => {
               date: '2026-01-13',
               amount: -1500,
               payee_name: 'Split shop',
+              cleared: false,
               subtransactions: [
                 {
                   amount: -1000,
@@ -570,6 +581,7 @@ describe('remote session authorization', () => {
       (row: { date: string }) => row.date === '2026-01-13',
     );
     expect(splitParent.amount).toBe(-1500);
+    expect(splitParent.cleared).toBe(false);
     expect(splitParent.subtransactions).toHaveLength(2);
     expect(
       splitParent.subtransactions.reduce(
@@ -579,6 +591,59 @@ describe('remote session authorization', () => {
     ).toBe(-1500);
     const splitChild = splitParent.subtransactions[0];
     const otherSplitChild = splitParent.subtransactions[1];
+    const childClearing = await detailsRpc('ui.transaction-cleared.update', {
+      id: splitChild.id,
+      cleared: false,
+    }).expect(200);
+    expect(childClearing.body.result).toBe('split-child');
+    const cleared = await detailsRpc('ui.transaction-cleared.update', {
+      id: splitParent.id,
+      cleared: true,
+    }).expect(200);
+    expect(cleared.body.result).toBe('updated');
+    const clearedSplit = await detailsRpc('transactions.list', {
+      accountId,
+      startDate: '2026-01-13',
+      endDate: '2026-01-13',
+    }).expect(200);
+    expect(clearedSplit.body.result[0]).toMatchObject({
+      id: splitParent.id,
+      cleared: true,
+      amount: -1500,
+      subtransactions: [
+        { id: splitChild.id, cleared: true, notes: 'first split note' },
+        { id: otherSplitChild.id, cleared: true },
+      ],
+    });
+
+    await request(server)
+      .post(rpcUrl)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        protocolVersion: 1,
+        requestId: 'reconcile-before-clearing',
+        operation: 'transactions.update',
+        payload: {
+          id: transactionId,
+          fields: { cleared: true, reconciled: true },
+        },
+      })
+      .expect(200);
+    const reconciled = await detailsRpc('ui.transaction-cleared.update', {
+      id: transactionId,
+      cleared: false,
+    }).expect(200);
+    expect(reconciled.body.result).toBe('reconciled');
+    const reconciledList = await detailsRpc('transactions.list', {
+      accountId,
+      startDate: '2026-01-12',
+      endDate: '2026-01-12',
+    }).expect(200);
+    expect(reconciledList.body.result[0]).toMatchObject({
+      id: transactionId,
+      cleared: true,
+      reconciled: true,
+    });
     await request(server)
       .post(rpcUrl)
       .set('Authorization', `Bearer ${token}`)
