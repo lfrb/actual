@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { RemoteReadonlySession } from './remote-session';
+import { RemoteUiSession } from './remote-session';
 
 function createServer() {
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
@@ -37,7 +37,7 @@ function createServer() {
 describe('read-only remote UI session transport', () => {
   it('cancels queued reads after a connection failure and allows an explicit later retry', async () => {
     const { fetch, options } = createServer();
-    const session = await RemoteReadonlySession.open(options);
+    const session = await RemoteUiSession.open(options);
     fetch.mockRejectedValueOnce(new Error('offline'));
     await Promise.all([
       expect(session.read('accounts.list')).rejects.toMatchObject({
@@ -53,7 +53,7 @@ describe('read-only remote UI session transport', () => {
   });
   it('opens a server-enforced read-only session and uses bearer-authenticated reads', async () => {
     const { fetch, options } = createServer();
-    const session = await RemoteReadonlySession.open(options);
+    const session = await RemoteUiSession.open(options);
     expect(await session.read('accounts.list')).toEqual([{ id: 'account' }]);
     expect(fetch.mock.calls[0][0]).toBe(
       'https://money.example/actual/remote/session/open',
@@ -76,7 +76,7 @@ describe('read-only remote UI session transport', () => {
 
   it('rejects mutations before dispatch and never retries a failed request', async () => {
     const { fetch, options } = createServer();
-    const session = await RemoteReadonlySession.open(options);
+    const session = await RemoteUiSession.open(options);
     await expect(
       session.read('account.create', { account: { name: 'Denied' } }),
     ).rejects.toMatchObject({ code: 'read-only-session' });
@@ -98,14 +98,14 @@ describe('read-only remote UI session transport', () => {
         readOnly: false,
       }),
     );
-    await expect(RemoteReadonlySession.open(options)).rejects.toMatchObject({
+    await expect(RemoteUiSession.open(options)).rejects.toMatchObject({
       code: 'invalid-session-response',
     });
   });
 
   it('rejects a response for a different request instead of showing its data', async () => {
     const { fetch, options } = createServer();
-    const session = await RemoteReadonlySession.open(options);
+    const session = await RemoteUiSession.open(options);
     fetch.mockResolvedValueOnce(
       Response.json({ protocolVersion: 1, requestId: 'other', result: [] }),
     );
@@ -116,7 +116,7 @@ describe('read-only remote UI session transport', () => {
 
   it('closes locally even when releasing the server session fails', async () => {
     const { fetch, options } = createServer();
-    const session = await RemoteReadonlySession.open(options);
+    const session = await RemoteUiSession.open(options);
     fetch.mockRejectedValueOnce(new Error('offline'));
     await expect(session.close()).rejects.toMatchObject({
       code: 'network-failure',

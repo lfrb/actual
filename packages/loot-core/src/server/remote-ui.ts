@@ -1,6 +1,6 @@
 import {
-  RemoteReadonlySession,
   RemoteSessionError,
+  RemoteUiSession,
 } from '#platform/client/remote-session';
 import { RemoteUiBridge } from '#platform/client/remote-ui-bridge';
 import * as asyncStorage from '#platform/server/asyncStorage';
@@ -20,7 +20,20 @@ export async function releaseRemoteUiCell(_args: {
   // Generated cells only exist while a remote bridge is active.
 }
 
-export async function openRemoteBudget({ id }: { id: string }) {
+export async function updateRemoteTransactionNote(_args: {
+  id: string;
+  notes: string;
+}) {
+  throw new RemoteSessionError('remote-ui-operation-unavailable');
+}
+
+export async function openRemoteBudget({
+  id,
+  editNotes = false,
+}: {
+  id: string;
+  editNotes?: boolean;
+}) {
   if (process.env.ACTUAL_HOSTED_RUNTIME === '1') {
     throw new Error('hosted-runtime-network-forbidden');
   }
@@ -39,15 +52,22 @@ export async function openRemoteBudget({ id }: { id: string }) {
     if (!file || file.operationMode !== 'remote' || file.encryptKeyId) {
       throw new Error('remote-budget-unavailable');
     }
-    const session = await RemoteReadonlySession.open({
+    const session = await RemoteUiSession.open({
       serverURL: server.BASE_SERVER,
       token,
       budgetId: id,
+      editNotes,
     });
     bridge = new RemoteUiBridge(
       session,
-      { id, budgetName: file.name, remoteReadOnly: true },
+      {
+        id,
+        budgetName: file.name,
+        remoteReadOnly: true,
+        ...(editNotes ? { remoteTransactionNotes: true } : {}),
+      },
       push,
+      editNotes ? (id, notes) => session.writeNote(id, notes) : undefined,
     );
     return {};
   } finally {
@@ -90,6 +110,9 @@ export function remoteUiHandler(
     current.send(name, args).catch(error => {
       if (
         bridge === current &&
+        (name !== 'remote-ui/update-transaction-note' ||
+          (error instanceof RemoteSessionError &&
+            ['access-lost', 'budget-not-found'].includes(error.code))) &&
         !(
           error instanceof RemoteSessionError && error.code === 'session-closed'
         )

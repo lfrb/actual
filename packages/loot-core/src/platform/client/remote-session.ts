@@ -16,10 +16,11 @@ type SessionOptions = {
   token: string;
   budgetId: string;
   fetch?: typeof fetch;
+  editNotes?: boolean;
 };
 
-/** Network-only, read-only UI session. Never loads or stores a budget locally. */
-export class RemoteReadonlySession {
+/** Network-only UI session. Never loads or stores a budget locally. */
+export class RemoteUiSession {
   private sessionId: string | null = null;
   private readonly baseURL: string;
   private readonly fetch: typeof fetch;
@@ -43,17 +44,20 @@ export class RemoteReadonlySession {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
-  static async open(options: SessionOptions): Promise<RemoteReadonlySession> {
-    const session = new RemoteReadonlySession(options);
+  static async open(options: SessionOptions): Promise<RemoteUiSession> {
+    const session = new RemoteUiSession(options);
     const reply = await session.post('/session/open', {
       protocolVersion: 1,
       budgetId: options.budgetId,
-      readOnly: true,
+      readOnly: !options.editNotes,
+      writeScope: options.editNotes ? 'transaction-notes' : undefined,
     });
     if (
       reply.protocolVersion !== 1 ||
       reply.budgetId !== options.budgetId ||
-      reply.readOnly !== true ||
+      reply.readOnly !== !options.editNotes ||
+      reply.writeScope !==
+        (options.editNotes ? 'transaction-notes' : undefined) ||
       typeof reply.sessionId !== 'string' ||
       reply.sessionId.length === 0
     ) {
@@ -67,6 +71,26 @@ export class RemoteReadonlySession {
     operation: RemoteV1Operation,
     payload: Record<string, unknown> = {},
   ): Promise<unknown> {
+    if (REMOTE_OPERATION_REGISTRY[operation].write) {
+      return Promise.reject(new RemoteSessionError('read-only-session'));
+    }
+    return this.enqueue(operation, payload);
+  }
+
+  writeNote(id: string, notes: string): Promise<unknown> {
+    if (!this.options.editNotes) {
+      return Promise.reject(new RemoteSessionError('read-only-session'));
+    }
+    return this.enqueue('ui.transaction-note.update', {
+      id,
+      fields: { notes },
+    });
+  }
+
+  private enqueue(
+    operation: RemoteV1Operation,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
     if (this.pending >= 512) {
       return Promise.reject(new RemoteSessionError('queue-full'));
     }
@@ -77,7 +101,7 @@ export class RemoteReadonlySession {
         if (epoch !== this.failureEpoch) {
           throw new RemoteSessionError('request-cancelled');
         }
-        return this.readNow(operation, payload);
+        return this.request(operation, payload);
       })
       .catch(error => {
         if (
@@ -104,15 +128,12 @@ export class RemoteReadonlySession {
     return result;
   }
 
-  private async readNow(
+  private async request(
     operation: RemoteV1Operation,
     payload: Record<string, unknown> = {},
   ): Promise<unknown> {
     if (!this.sessionId) throw new RemoteSessionError('session-closed');
     const sessionId = this.sessionId;
-    if (REMOTE_OPERATION_REGISTRY[operation].write) {
-      throw new RemoteSessionError('read-only-session');
-    }
     const request = parseRemoteV1Request({
       protocolVersion: 1,
       requestId: globalThis.crypto.randomUUID(),

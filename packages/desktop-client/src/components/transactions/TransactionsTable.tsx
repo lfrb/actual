@@ -109,6 +109,7 @@ import type {
   TableNavigator,
   TableProps,
 } from '#components/table';
+import { RemoteTransactionNote } from '#components/transactions/RemoteTransactionNote';
 import {
   SchedulesProvider,
   useCachedSchedules,
@@ -1133,6 +1134,7 @@ const Transaction = memo(function Transaction({
 }: TransactionProps) {
   const { t } = useTranslation();
   const [readOnly] = useMetadataPref('remoteReadOnly');
+  const [canEditRemoteNotes] = useMetadataPref('remoteTransactionNotes');
   const focusedField = readOnly ? null : focusedFieldProp;
   const onEdit: TransactionProps['onEdit'] = (id, field) => {
     if (!readOnly) onEditProp(id, field);
@@ -1797,7 +1799,11 @@ const Transaction = memo(function Transaction({
           />
         );
       case 'notes':
-        return (
+        return canEditRemoteNotes && !isPreview && !isTemporaryId(id) ? (
+          <Cell key={columnId} name="notes" width="flex" plain>
+            <RemoteTransactionNote key={id} id={id} notes={notes ?? ''} />
+          </Cell>
+        ) : (
           <NotesCell
             key={columnId}
             note={notes ?? ''}

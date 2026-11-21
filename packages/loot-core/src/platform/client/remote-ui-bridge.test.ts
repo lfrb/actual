@@ -3,12 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { send as Push } from '#platform/server/connection';
 import { q } from '#shared/query';
 
-import type { RemoteReadonlySession } from './remote-session';
+import type { RemoteUiSession } from './remote-session';
 import { RemoteUiBridge } from './remote-ui-bridge';
 
 function createBridge() {
-  const read = vi.fn<RemoteReadonlySession['read']>();
-  const close = vi.fn<RemoteReadonlySession['close']>().mockResolvedValue();
+  const read = vi.fn<RemoteUiSession['read']>();
+  const close = vi.fn<RemoteUiSession['close']>().mockResolvedValue();
   const push = vi.fn<typeof Push>();
   const bridge = new RemoteUiBridge(
     { read, close },

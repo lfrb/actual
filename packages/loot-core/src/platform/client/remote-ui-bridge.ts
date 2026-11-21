@@ -3,7 +3,7 @@ import type { RemoteV1Operation } from '#shared/remote-v1-contract';
 import type { MetadataPrefs } from '#types/prefs';
 
 import { RemoteSessionError } from './remote-session';
-import type { RemoteReadonlySession } from './remote-session';
+import type { RemoteUiSession } from './remote-session';
 
 const reads: Record<string, RemoteV1Operation> = {
   'accounts-get': 'ui.accounts',
@@ -30,9 +30,10 @@ export class RemoteUiBridge {
   private closed = false;
 
   constructor(
-    private readonly session: Pick<RemoteReadonlySession, 'read' | 'close'>,
+    private readonly session: Pick<RemoteUiSession, 'read' | 'close'>,
     readonly metadata: MetadataPrefs,
     private readonly push: typeof Push,
+    private readonly writeNote?: RemoteUiSession['writeNote'],
   ) {}
 
   async send(name: string, input?: unknown): Promise<unknown> {
@@ -40,6 +41,18 @@ export class RemoteUiBridge {
     const args = isRecord(input) ? input : {};
     if (Object.hasOwn(reads, name)) return this.session.read(reads[name], args);
     if (name === 'query') return this.query(args);
+    if (name === 'remote-ui/update-transaction-note') {
+      if (!this.writeNote) throw new RemoteSessionError('read-only-session');
+      if (typeof args.id !== 'string' || typeof args.notes !== 'string') {
+        throw new RemoteSessionError('invalid-request');
+      }
+      const updated = await this.writeNote(args.id, args.notes);
+      if (updated !== true) {
+        throw new RemoteSessionError('transaction-not-found');
+      }
+      this.push('sync-event', { type: 'success', tables: ['transactions'] });
+      return;
+    }
     if (name === 'remote-ui/release-cell') {
       if (typeof args.sheetName !== 'string' || typeof args.name !== 'string') {
         throw new RemoteSessionError('invalid-request');

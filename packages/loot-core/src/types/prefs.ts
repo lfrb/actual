@@ -81,6 +81,7 @@ export type SyncedPrefs = Partial<
 export type MetadataPrefs = Partial<{
   /** Ephemeral UI session marker; never written into a local budget. */
   remoteReadOnly: true;
+  remoteTransactionNotes: true;
   budgetName: string;
   id: string;
   lastUploaded: string;

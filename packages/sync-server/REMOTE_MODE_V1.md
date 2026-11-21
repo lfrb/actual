@@ -7,7 +7,10 @@ SDK remote activation is not implemented here.
 
 The web app can open existing remote budgets read-only using its normal server
 login. It reuses the account registers and transaction table, with explicit
-Refresh and Close actions. Editing, reports, the budget worksheet, schedules,
+Refresh and Close actions. Choose **Enable note editing** to edit an existing
+transaction note in a restricted session, or **Switch to read-only** to disable
+it. Reopening a budget from the picker starts in read-only mode. Other edits,
+reports, the budget worksheet, schedules,
 mobile/Electron remote UI, and live cross-client updates are deferred. Browser
 query results and view preferences are transient; no local budget database or
 conventional file download is created for the remote budget.
@@ -37,6 +40,12 @@ yarn workspace @actual-app/web exec playwright test -c playwright.remote.config.
 The web UI opens sessions with optional `readOnly: true`; the server echoes the
 flag and rejects every write operation for that session with
 `read-only-session` (403). Omitting the flag preserves writable RPC sessions.
+For note editing, open with `writeScope: "transaction-notes"`. This session
+permits reads and `ui.transaction-note.update` with only the transaction ID and
+the new note. The server rejects any other write with `write-outside-scope` (403).
+The browser refetches transactions after confirmation. If the result is unknown,
+it asks the user to refresh before retrying.
+
 The `ui.*` registry contains native account/category/payee/tag reads, bounded AQL,
 notes, and spreadsheet cells. It does not accept arbitrary engine handler names.
 Generated spreadsheet queries remain private to each browser session, rather

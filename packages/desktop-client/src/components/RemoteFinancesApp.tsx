@@ -17,7 +17,7 @@ import { listen, send } from '@actual-app/core/platform/client/connection';
 import type { AccountEntity } from '@actual-app/core/types/models';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { closeBudget } from '#budgetfiles/budgetfilesSlice';
+import { closeBudget, openRemoteBudget } from '#budgetfiles/budgetfilesSlice';
 import { Account } from '#components/accounts/Account';
 import { accountNameStyle } from '#components/sidebar/Account';
 import { SidebarShell } from '#components/sidebar/SidebarShell';
@@ -82,6 +82,8 @@ export function RemoteFinancesApp() {
   const initialNavigation = useRef(false);
   const { isNarrowWidth } = useResponsive();
   const [budgetName] = useMetadataPref('budgetName');
+  const [budgetId] = useMetadataPref('id');
+  const [editNotes] = useMetadataPref('remoteTransactionNotes');
   const accounts = useAccounts();
   const payees = usePayees();
   const categories = useCategories();
@@ -164,8 +166,22 @@ export function RemoteFinancesApp() {
           }}
         >
           <SvgLockClosed width={13} height={13} aria-hidden="true" />
-          <Text style={styles.smallText}>{t('Read-only')}</Text>
+          <Text style={styles.smallText}>
+            {editNotes ? t('Notes editable') : t('Read-only')}
+          </Text>
           <View style={{ flex: 1 }} />
+          {!isNarrowWidth && !accessLost && budgetId && (
+            <Button
+              isDisabled={refreshing}
+              onPress={() =>
+                void dispatch(
+                  openRemoteBudget({ id: budgetId, editNotes: !editNotes }),
+                )
+              }
+            >
+              {editNotes ? t('Switch to read-only') : t('Enable note editing')}
+            </Button>
+          )}
           <Button
             onPress={() => void refresh()}
             isDisabled={refreshing || accessLost}

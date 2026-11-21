@@ -14,7 +14,7 @@ async function openDemo(page: Page) {
   ).toBeVisible();
 }
 
-test('reads existing screens without downloads or writes, refreshes external changes, and closes', async ({
+test('reads existing screens without downloads or writes, refreshes external changes, and edits a note on demand', async ({
   page,
   request,
 }) => {
@@ -30,7 +30,8 @@ test('reads existing screens without downloads or writes, refreshes external cha
       const operation = request.postDataJSON()?.operation;
       if (
         operation &&
-        !operation.startsWith('ui.') &&
+        (!operation.startsWith('ui.') ||
+          operation === 'ui.transaction-note.update') &&
         operation !== 'preferences.get'
       ) {
         mutations.push(operation);
@@ -122,6 +123,28 @@ test('reads existing screens without downloads or writes, refreshes external cha
   expect(downloads).toEqual([]);
   expect(mutations).toEqual([]);
   expect(errors).toEqual([]);
+  await page.getByRole('button', { name: 'Enable note editing' }).click();
+  await expect(page.getByText('Notes editable', { exact: true })).toBeVisible();
+  await page
+    .getByRole('button', { name: /Edit transaction note: Weekly groceries/ })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Transaction note' });
+  await dialog
+    .getByRole('textbox', { name: 'Transaction note' })
+    .fill('Paid for weekly groceries');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole('button', {
+      name: 'Edit transaction note: Paid for weekly groceries',
+    }),
+  ).toBeVisible();
+  expect(mutations).toEqual(['ui.transaction-note.update']);
+  await page.getByRole('button', { name: 'Switch to read-only' }).click();
+  await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('Paid for weekly groceries', { exact: true }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(
     page.getByText('Read-only server budget', { exact: true }),
