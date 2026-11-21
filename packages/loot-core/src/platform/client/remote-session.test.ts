@@ -128,3 +128,109 @@ describe('read-only remote UI session transport', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+async function openEditingSession() {
+  const { fetch, options } = createServer();
+  fetch.mockResolvedValueOnce(
+    Response.json({
+      protocolVersion: 1,
+      budgetId: options.budgetId,
+      sessionId: 'session',
+      readOnly: false,
+      writeScope: 'transaction-details',
+    }),
+  );
+  const session = await RemoteUiSession.open({
+    ...options,
+    editTransactions: true,
+  });
+  return { fetch, session };
+}
+
+describe('remote UI write confirmation', () => {
+  it('reads the matching journal result after a lost clearing response without resending the write', async () => {
+    const { fetch, session } = await openEditingSession();
+    fetch.mockRejectedValueOnce(new Error('connection reset'));
+    fetch.mockImplementationOnce(async () => {
+      const request = JSON.parse(String(fetch.mock.calls[1][1]?.body));
+      return Response.json({
+        protocolVersion: 1,
+        requestId: request.requestId,
+        operation: {
+          operation: request.operation,
+          status: 'succeeded',
+          resultExpired: false,
+          result: 'updated',
+        },
+      });
+    });
+
+    await expect(session.writeCleared('transaction', false)).resolves.toBe(
+      'updated',
+    );
+    const request = JSON.parse(String(fetch.mock.calls[1][1]?.body));
+    expect(request).toMatchObject({
+      operation: 'ui.transaction-cleared.update',
+      payload: { id: 'transaction', cleared: false },
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch.mock.calls[2]).toEqual([
+      `https://money.example/actual/remote/budget/operations/${String(request.requestId)}`,
+      expect.objectContaining({
+        method: 'GET',
+        headers: { Authorization: 'Bearer private-token' },
+        body: undefined,
+        cache: 'no-store',
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      status: 'running',
+      resultExpired: false,
+      operation: 'ui.transaction-note.update',
+    },
+    {
+      status: 'succeeded',
+      resultExpired: true,
+      operation: 'ui.transaction-note.update',
+    },
+    {
+      status: 'succeeded',
+      resultExpired: false,
+      operation: 'ui.transaction-cleared.update',
+    },
+  ])('does not confirm an unusable journal result (%j)', async record => {
+    const { fetch, session } = await openEditingSession();
+    fetch.mockResolvedValueOnce(
+      Response.json({ error: { code: 'operation-timeout' } }, { status: 504 }),
+    );
+    fetch.mockImplementationOnce(async () => {
+      const request = JSON.parse(String(fetch.mock.calls[1][1]?.body));
+      return Response.json({
+        protocolVersion: 1,
+        requestId: request.requestId,
+        operation: { ...record, result: true },
+      });
+    });
+    await expect(
+      session.writeNote('transaction', 'New note'),
+    ).rejects.toMatchObject({
+      code: 'operation-timeout',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('propagates loss of access during confirmation', async () => {
+    const { fetch, session } = await openEditingSession();
+    fetch.mockRejectedValueOnce(new Error('connection reset'));
+    fetch.mockResolvedValueOnce(new Response(null, { status: 401 }));
+    await expect(
+      session.writeNote('transaction', 'New note'),
+    ).rejects.toMatchObject({
+      code: 'access-lost',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+});

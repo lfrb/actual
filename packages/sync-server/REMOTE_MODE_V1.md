@@ -50,7 +50,9 @@ Clearing takes a transaction ID and a boolean. A split parent and its children
 change in one batch. A reconciled transaction or a split child targeted directly
 returns a refusal and leaves all rows unchanged. Each side of a transfer keeps
 its own clearing status. The browser refreshes visible data after confirmation.
-If the result is unknown, it asks the user to refresh before retrying.
+If a write reply is lost, the browser checks the operation journal once using
+the original request ID. It can confirm a retained result without repeating
+the write. If the outcome is still unknown, it asks the user to refresh.
 
 The `ui.*` registry contains native account/category/payee/tag reads, bounded AQL,
 notes, and spreadsheet cells. It does not accept arbitrary engine handler names.

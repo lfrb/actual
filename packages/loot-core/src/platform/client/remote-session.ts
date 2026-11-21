@@ -11,6 +11,15 @@ export class RemoteSessionError extends Error {
   }
 }
 
+const UNCERTAIN_WRITE_ERRORS = new Set([
+  'network-failure',
+  'invalid-server-response',
+  'invalid-rpc-response',
+  'operation-timeout',
+  'operation-indeterminate',
+  'operation-in-progress',
+]);
+
 type SessionOptions = {
   serverURL: string;
   token: string;
@@ -49,7 +58,7 @@ export class RemoteUiSession {
     const writeScope = options.editTransactions
       ? 'transaction-details'
       : undefined;
-    const reply = await session.post('/session/open', {
+    const reply = await session.fetchJson('/session/open', {
       protocolVersion: 1,
       budgetId: options.budgetId,
       readOnly: !options.editTransactions,
@@ -149,49 +158,115 @@ export class RemoteUiSession {
       operation,
       payload,
     });
-    const reply = await this.post(
-      `/${encodeURIComponent(this.options.budgetId)}/${encodeURIComponent(sessionId)}/rpc`,
-      request,
-    );
+    try {
+      const reply = await this.fetchJson(
+        `/${encodeURIComponent(this.options.budgetId)}/${encodeURIComponent(sessionId)}/rpc`,
+        request,
+      );
+      if (this.sessionId !== sessionId) {
+        throw new RemoteSessionError('session-closed');
+      }
+      if (
+        reply.protocolVersion !== 1 ||
+        reply.requestId !== request.requestId
+      ) {
+        throw new RemoteSessionError('invalid-rpc-response');
+      }
+      if (isRecord(reply.error) && typeof reply.error.code === 'string') {
+        throw new RemoteSessionError(reply.error.code);
+      }
+      if (!Object.hasOwn(reply, 'result')) {
+        throw new RemoteSessionError('invalid-rpc-response');
+      }
+      return reply.result;
+    } catch (error) {
+      if (this.sessionId !== sessionId) {
+        throw new RemoteSessionError('session-closed');
+      }
+      if (
+        REMOTE_OPERATION_REGISTRY[operation].write &&
+        error instanceof RemoteSessionError &&
+        UNCERTAIN_WRITE_ERRORS.has(error.code)
+      ) {
+        const confirmed = await this.confirmWrite(
+          sessionId,
+          operation,
+          request.requestId,
+        );
+        if (confirmed) return confirmed.result;
+      }
+      throw error;
+    }
+  }
+
+  private async confirmWrite(
+    sessionId: string,
+    operation: RemoteV1Operation,
+    requestId: string,
+  ): Promise<{ result: unknown } | null> {
+    // Read the existing journal entry once. Never send the mutation again.
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.fetchJson(
+        `/${encodeURIComponent(this.options.budgetId)}/operations/${encodeURIComponent(requestId)}`,
+        undefined,
+        5_000,
+      );
+    } catch (error) {
+      if (this.sessionId !== sessionId) {
+        throw new RemoteSessionError('session-closed');
+      }
+      if (
+        error instanceof RemoteSessionError &&
+        ['access-lost', 'budget-not-found'].includes(error.code)
+      ) {
+        throw error;
+      }
+      return null;
+    }
     if (this.sessionId !== sessionId) {
       throw new RemoteSessionError('session-closed');
     }
-    if (reply.protocolVersion !== 1 || reply.requestId !== request.requestId) {
-      throw new RemoteSessionError('invalid-rpc-response');
+    const record = reply.operation;
+    if (
+      reply.protocolVersion !== 1 ||
+      reply.requestId !== requestId ||
+      !isRecord(record) ||
+      record.operation !== operation ||
+      record.status !== 'succeeded' ||
+      record.resultExpired !== false ||
+      !Object.hasOwn(record, 'result')
+    ) {
+      return null;
     }
-    if (isRecord(reply.error) && typeof reply.error.code === 'string') {
-      throw new RemoteSessionError(reply.error.code);
-    }
-    if (!Object.hasOwn(reply, 'result')) {
-      throw new RemoteSessionError('invalid-rpc-response');
-    }
-    return reply.result;
+    return { result: record.result };
   }
 
   async close(): Promise<void> {
     const id = this.sessionId;
     this.sessionId = null;
     if (!id) return;
-    await this.post(
+    await this.fetchJson(
       `/session/${encodeURIComponent(this.options.budgetId)}/${encodeURIComponent(id)}/close`,
       {},
     );
   }
 
-  private async post(
+  private async fetchJson(
     path: string,
-    body: object,
+    body?: object,
+    timeout = 30_000,
   ): Promise<Record<string, unknown>> {
     let response: Response;
     try {
       response = await this.fetch(this.baseURL + path, {
-        method: 'POST',
+        method: body ? 'POST' : 'GET',
         headers: {
           Authorization: `Bearer ${this.options.token}`,
-          'Content-Type': 'application/json',
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
         },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(30_000),
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeout),
         cache: 'no-store',
         credentials: 'omit',
         redirect: 'error',
