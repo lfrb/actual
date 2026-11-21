@@ -17,7 +17,7 @@ import { listen, send } from '@actual-app/core/platform/client/connection';
 import type { AccountEntity } from '@actual-app/core/types/models';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { closeBudget, openRemoteBudget } from '#budgetfiles/budgetfilesSlice';
+import { closeBudget } from '#budgetfiles/budgetfilesSlice';
 import { Account } from '#components/accounts/Account';
 import { accountNameStyle } from '#components/sidebar/Account';
 import { SidebarShell } from '#components/sidebar/SidebarShell';
@@ -29,6 +29,8 @@ import { useNavigate } from '#hooks/useNavigate';
 import { usePayees } from '#hooks/usePayees';
 import { ScrollProvider } from '#hooks/useScrollListener';
 import { useSheetValue } from '#hooks/useSheetValue';
+import { addNotification } from '#notifications/notificationsSlice';
+import { mergeLocalPrefs } from '#prefs/prefsSlice';
 import { useDispatch } from '#redux';
 import * as bindings from '#spreadsheet/bindings';
 
@@ -82,12 +84,12 @@ export function RemoteFinancesApp() {
   const initialNavigation = useRef(false);
   const { isNarrowWidth } = useResponsive();
   const [budgetName] = useMetadataPref('budgetName');
-  const [budgetId] = useMetadataPref('id');
   const [editTransactions] = useMetadataPref('remoteTransactionEdits');
   const accounts = useAccounts();
   const payees = usePayees();
   const categories = useCategories();
   const [refreshing, setRefreshing] = useState(false);
+  const [switchingMode, setSwitchingMode] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [accessLost, setAccessLost] = useState(false);
   const scrollableRef = useRef<HTMLDivElement>(null);
@@ -107,6 +109,29 @@ export function RemoteFinancesApp() {
       void navigate('/accounts', { replace: true, state: null });
     }
   }, [navigate]);
+
+  async function switchEditMode() {
+    if (switchingMode) return;
+    const next = !editTransactions;
+    setSwitchingMode(true);
+    try {
+      await send('remote-ui/set-edit-mode', { editTransactions: next });
+      dispatch(
+        mergeLocalPrefs({ remoteTransactionEdits: next ? true : undefined }),
+      );
+    } catch {
+      dispatch(
+        addNotification({
+          notification: {
+            type: 'error',
+            message: t('Could not change editing mode. Try again.'),
+          },
+        }),
+      );
+    } finally {
+      setSwitchingMode(false);
+    }
+  }
 
   const refresh = async () => {
     if (refreshing) return;
@@ -172,17 +197,10 @@ export function RemoteFinancesApp() {
               : t('Read-only')}
           </Text>
           <View style={{ flex: 1 }} />
-          {!isNarrowWidth && !accessLost && budgetId && (
+          {!isNarrowWidth && !accessLost && (
             <Button
-              isDisabled={refreshing}
-              onPress={() =>
-                void dispatch(
-                  openRemoteBudget({
-                    id: budgetId,
-                    editTransactions: !editTransactions,
-                  }),
-                )
-              }
+              isDisabled={refreshing || switchingMode}
+              onPress={() => void switchEditMode()}
             >
               {editTransactions
                 ? t('Switch to read-only')
@@ -191,12 +209,15 @@ export function RemoteFinancesApp() {
           )}
           <Button
             onPress={() => void refresh()}
-            isDisabled={refreshing || accessLost}
+            isDisabled={refreshing || accessLost || switchingMode}
           >
             <SvgRefreshArrow width={13} height={13} aria-hidden="true" />{' '}
             <Trans>Refresh</Trans>
           </Button>
-          <Button onPress={() => void dispatch(closeBudget())}>
+          <Button
+            isDisabled={switchingMode}
+            onPress={() => void dispatch(closeBudget())}
+          >
             <Trans>Close</Trans>
           </Button>
         </View>

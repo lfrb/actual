@@ -124,10 +124,13 @@ test('reads existing screens without downloads or writes, refreshes external cha
   expect(downloads).toEqual([]);
   expect(mutations).toEqual([]);
   expect(errors).toEqual([]);
+  const savingsUrl = page.url();
   await page.getByRole('button', { name: 'Enable limited editing' }).click();
   await expect(
     page.getByText('Notes and clearing editable', { exact: true }),
   ).toBeVisible();
+  await expect(page).toHaveURL(savingsUrl);
+  await page.getByRole('link', { name: /^All accounts/ }).click();
   await page
     .getByRole('button', { name: /Edit transaction note: Weekly groceries/ })
     .click();

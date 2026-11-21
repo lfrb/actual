@@ -9,9 +9,10 @@ The web app can open existing remote budgets read-only using its normal server
 login. It reuses the account registers and transaction table, with explicit
 Refresh and Close actions. Choose **Enable limited editing** to edit existing
 transaction notes or clear and unclear transactions. **Switch to read-only**
-removes those controls. Reconciled transactions stay locked. Reopening a budget from the picker starts in read-only mode. Other edits,
-reports, the budget worksheet, schedules,
-mobile/Electron remote UI, and live cross-client updates are deferred. Browser
+removes those controls. Both actions keep the active account open. Reconciled
+transactions stay locked. Opening a budget from the picker starts in read-only
+mode. Other edits, reports, the budget worksheet, schedules, mobile/Electron
+remote UI, and live cross-client updates are deferred. Browser
 query results and view preferences are transient; no local budget database or
 conventional file download is created for the remote budget.
 

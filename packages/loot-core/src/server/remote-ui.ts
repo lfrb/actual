@@ -34,13 +34,11 @@ export async function updateRemoteTransactionCleared(_args: {
   throw new RemoteSessionError('remote-ui-operation-unavailable');
 }
 
-export async function openRemoteBudget({
-  id,
-  editTransactions = false,
-}: {
-  id: string;
-  editTransactions?: boolean;
-}) {
+export async function setRemoteEditMode(_args: { editTransactions: boolean }) {
+  throw new RemoteSessionError('remote-ui-operation-unavailable');
+}
+
+export async function openRemoteBudget({ id }: { id: string }) {
   if (process.env.ACTUAL_HOSTED_RUNTIME === '1') {
     throw new Error('hosted-runtime-network-forbidden');
   }
@@ -63,7 +61,6 @@ export async function openRemoteBudget({
       serverURL: server.BASE_SERVER,
       token,
       budgetId: id,
-      editTransactions,
     });
     bridge = new RemoteUiBridge(
       session,
@@ -71,7 +68,6 @@ export async function openRemoteBudget({
         id,
         budgetName: file.name,
         remoteReadOnly: true,
-        ...(editTransactions ? { remoteTransactionEdits: true } : {}),
       },
       push,
     );
@@ -117,6 +113,7 @@ export function remoteUiHandler(
       if (
         bridge === current &&
         (![
+          'remote-ui/set-edit-mode',
           'remote-ui/update-transaction-note',
           'remote-ui/update-transaction-cleared',
         ].includes(name) ||

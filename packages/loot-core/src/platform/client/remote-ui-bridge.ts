@@ -31,7 +31,12 @@ export class RemoteUiBridge {
 
   constructor(
     private readonly session: Pick<RemoteUiSession, 'read' | 'close'> &
-      Partial<Pick<RemoteUiSession, 'writeNote' | 'writeCleared'>>,
+      Partial<
+        Pick<
+          RemoteUiSession,
+          'writeNote' | 'writeCleared' | 'setEditTransactions'
+        >
+      >,
     readonly metadata: MetadataPrefs,
     private readonly push: typeof Push,
   ) {}
@@ -41,6 +46,19 @@ export class RemoteUiBridge {
     const args = isRecord(input) ? input : {};
     if (Object.hasOwn(reads, name)) return this.session.read(reads[name], args);
     if (name === 'query') return this.query(args);
+    if (name === 'remote-ui/set-edit-mode') {
+      if (
+        typeof args.editTransactions !== 'boolean' ||
+        !this.session.setEditTransactions
+      ) {
+        throw new RemoteSessionError('invalid-request');
+      }
+      await this.session.setEditTransactions(args.editTransactions);
+      this.metadata.remoteTransactionEdits = args.editTransactions
+        ? true
+        : undefined;
+      return;
+    }
     if (name === 'remote-ui/update-transaction-note') {
       if (!this.session.writeNote) {
         throw new RemoteSessionError('read-only-session');

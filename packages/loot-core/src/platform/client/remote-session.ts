@@ -31,6 +31,7 @@ type SessionOptions = {
 /** Network-only UI session. Never loads or stores a budget locally. */
 export class RemoteUiSession {
   private sessionId: string | null = null;
+  private editTransactions: boolean;
   private readonly baseURL: string;
   private readonly fetch: typeof fetch;
   private queue: Promise<void> = Promise.resolve();
@@ -39,6 +40,7 @@ export class RemoteUiSession {
 
   private constructor(private readonly options: SessionOptions) {
     this.options = { ...options };
+    this.editTransactions = options.editTransactions === true;
     const url = new URL(options.serverURL);
     if (
       !['http:', 'https:'].includes(url.protocol) ||
@@ -55,27 +57,60 @@ export class RemoteUiSession {
 
   static async open(options: SessionOptions): Promise<RemoteUiSession> {
     const session = new RemoteUiSession(options);
-    const writeScope = options.editTransactions
-      ? 'transaction-details'
-      : undefined;
-    const reply = await session.fetchJson('/session/open', {
+    session.sessionId = await session.openSession(session.editTransactions);
+    return session;
+  }
+
+  private async openSession(editTransactions: boolean): Promise<string> {
+    const writeScope = editTransactions ? 'transaction-details' : undefined;
+    const reply = await this.fetchJson('/session/open', {
       protocolVersion: 1,
-      budgetId: options.budgetId,
-      readOnly: !options.editTransactions,
+      budgetId: this.options.budgetId,
+      readOnly: !editTransactions,
       writeScope,
     });
     if (
       reply.protocolVersion !== 1 ||
-      reply.budgetId !== options.budgetId ||
-      reply.readOnly !== !options.editTransactions ||
+      reply.budgetId !== this.options.budgetId ||
+      reply.readOnly !== !editTransactions ||
       reply.writeScope !== writeScope ||
       typeof reply.sessionId !== 'string' ||
       reply.sessionId.length === 0
     ) {
       throw new RemoteSessionError('invalid-session-response');
     }
-    session.sessionId = reply.sessionId;
-    return session;
+    return reply.sessionId;
+  }
+
+  setEditTransactions(editTransactions: boolean): Promise<void> {
+    return this.enqueue(
+      async () => {
+        const previous = this.sessionId;
+        if (!previous) throw new RemoteSessionError('session-closed');
+        if (this.editTransactions === editTransactions) return;
+
+        // Swap only after the server confirms the new scope. Requests already
+        // in the queue complete with the previous session.
+        const next = await this.openSession(editTransactions);
+        if (this.sessionId !== previous) {
+          await this.releaseSession(next);
+          throw new RemoteSessionError('session-closed');
+        }
+        this.sessionId = next;
+        this.editTransactions = editTransactions;
+        await this.releaseSession(previous);
+        if (!this.sessionId) throw new RemoteSessionError('session-closed');
+      },
+      { cancelOnFailure: false },
+    );
+  }
+
+  private async releaseSession(id: string) {
+    try {
+      await this.closeSession(id, 5_000);
+    } catch {
+      // Network failures leave the unused session to expire on the server.
+    }
   }
 
   read(
@@ -85,30 +120,33 @@ export class RemoteUiSession {
     if (REMOTE_OPERATION_REGISTRY[operation].write) {
       return Promise.reject(new RemoteSessionError('read-only-session'));
     }
-    return this.enqueue(operation, payload);
+    return this.enqueue(() => this.request(operation, payload));
   }
 
   writeNote(id: string, notes: string): Promise<unknown> {
-    if (!this.options.editTransactions) {
-      return Promise.reject(new RemoteSessionError('read-only-session'));
-    }
-    return this.enqueue('ui.transaction-note.update', {
-      id,
-      fields: { notes },
-    });
+    return this.write('ui.transaction-note.update', { id, fields: { notes } });
   }
 
   writeCleared(id: string, cleared: boolean): Promise<unknown> {
-    if (!this.options.editTransactions) {
-      return Promise.reject(new RemoteSessionError('read-only-session'));
-    }
-    return this.enqueue('ui.transaction-cleared.update', { id, cleared });
+    return this.write('ui.transaction-cleared.update', { id, cleared });
   }
 
-  private enqueue(
+  private write(
     operation: RemoteV1Operation,
     payload: Record<string, unknown>,
-  ): Promise<unknown> {
+  ) {
+    return this.enqueue(() => {
+      if (!this.editTransactions) {
+        throw new RemoteSessionError('read-only-session');
+      }
+      return this.request(operation, payload);
+    });
+  }
+
+  private enqueue<T>(
+    task: () => Promise<T>,
+    { cancelOnFailure = true }: { cancelOnFailure?: boolean } = {},
+  ): Promise<T> {
     if (this.pending >= 512) {
       return Promise.reject(new RemoteSessionError('queue-full'));
     }
@@ -119,10 +157,11 @@ export class RemoteUiSession {
         if (epoch !== this.failureEpoch) {
           throw new RemoteSessionError('request-cancelled');
         }
-        return this.request(operation, payload);
+        return task();
       })
       .catch(error => {
         if (
+          cancelOnFailure &&
           !(
             error instanceof RemoteSessionError &&
             [
@@ -246,9 +285,14 @@ export class RemoteUiSession {
     const id = this.sessionId;
     this.sessionId = null;
     if (!id) return;
+    await this.closeSession(id);
+  }
+
+  private async closeSession(id: string, timeout?: number) {
     await this.fetchJson(
       `/session/${encodeURIComponent(this.options.budgetId)}/${encodeURIComponent(id)}/close`,
       {},
+      timeout,
     );
   }
 

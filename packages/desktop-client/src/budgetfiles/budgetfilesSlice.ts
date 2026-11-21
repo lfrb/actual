@@ -114,15 +114,12 @@ export const loadBudget = createAppAsyncThunk(
 
 export const openRemoteBudget = createAppAsyncThunk(
   `${sliceName}/openRemoteBudget`,
-  async (
-    { id, editTransactions }: { id: string; editTransactions?: boolean },
-    { dispatch, extra: { queryClient } },
-  ) => {
+  async ({ id }: { id: string }, { dispatch, extra: { queryClient } }) => {
     dispatch(setAppState({ loadingText: t('Loading...') }));
     try {
       await dispatch(closeBudget()).unwrap();
       queryClient.clear();
-      await send('open-remote-budget', { id, editTransactions });
+      await send('open-remote-budget', { id });
       dispatch(closeModal());
       await dispatch(loadPrefs()).unwrap();
     } catch {

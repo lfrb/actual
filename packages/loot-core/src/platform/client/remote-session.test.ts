@@ -234,3 +234,62 @@ describe('remote UI write confirmation', () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('remote UI session mode changes', () => {
+  it('uses the newly confirmed session and rejects writes queued after switching to read-only', async () => {
+    const { fetch, session } = await openEditingSession();
+    fetch.mockResolvedValueOnce(
+      Response.json({
+        protocolVersion: 1,
+        budgetId: 'budget',
+        sessionId: 'read-only-session',
+        readOnly: true,
+      }),
+    );
+    await Promise.all([
+      session.setEditTransactions(false),
+      expect(
+        session.writeNote('transaction', 'Too late'),
+      ).rejects.toMatchObject({
+        code: 'read-only-session',
+      }),
+    ]);
+    await expect(session.read('accounts.list')).resolves.toEqual([
+      { id: 'account' },
+    ]);
+    expect(
+      fetch.mock.calls.map(([url]) => new URL(String(url)).pathname),
+    ).toEqual([
+      '/actual/remote/session/open',
+      '/actual/remote/session/open',
+      '/actual/remote/session/budget/session/close',
+      '/actual/remote/budget/read-only-session/rpc',
+    ]);
+  });
+
+  it('keeps the current session and queued reads intact if opening a replacement fails', async () => {
+    const { fetch, options } = createServer();
+    const session = await RemoteUiSession.open(options);
+    fetch.mockRejectedValueOnce(new Error('connection reset'));
+    await Promise.all([
+      expect(session.setEditTransactions(true)).rejects.toMatchObject({
+        code: 'network-failure',
+      }),
+      expect(session.read('accounts.list')).resolves.toEqual([
+        { id: 'account' },
+      ]),
+    ]);
+    expect(
+      fetch.mock.calls.map(([url]) => new URL(String(url)).pathname),
+    ).toEqual([
+      '/actual/remote/session/open',
+      '/actual/remote/session/open',
+      '/actual/remote/budget/session/rpc',
+    ]);
+    await expect(
+      session.writeNote('transaction', 'Denied'),
+    ).rejects.toMatchObject({
+      code: 'read-only-session',
+    });
+  });
+});

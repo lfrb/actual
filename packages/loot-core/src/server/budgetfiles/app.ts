@@ -29,6 +29,7 @@ import * as prefs from '#server/prefs';
 import {
   openRemoteBudget,
   releaseRemoteUiCell,
+  setRemoteEditMode,
   updateRemoteTransactionCleared,
   updateRemoteTransactionNote,
 } from '#server/remote-ui';
@@ -67,6 +68,7 @@ const TEST_BUDGET_ID = '_test-budget';
 
 export type BudgetFileHandlers = {
   'open-remote-budget': typeof openRemoteBudget;
+  'remote-ui/set-edit-mode': typeof setRemoteEditMode;
   'remote-ui/update-transaction-cleared': typeof updateRemoteTransactionCleared;
   'remote-ui/update-transaction-note': typeof updateRemoteTransactionNote;
   'remote-ui/release-cell': typeof releaseRemoteUiCell;
@@ -96,6 +98,7 @@ export type BudgetFileHandlers = {
 
 export const app = createApp<BudgetFileHandlers>();
 app.method('open-remote-budget', openRemoteBudget);
+app.method('remote-ui/set-edit-mode', setRemoteEditMode);
 app.method(
   'remote-ui/update-transaction-cleared',
   updateRemoteTransactionCleared,
