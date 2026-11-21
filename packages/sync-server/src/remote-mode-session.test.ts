@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { q } from '@actual-app/core/shared/query';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -134,6 +135,45 @@ describe('remote session authorization', () => {
     const sessionId = opened.body.sessionId as string;
     openedSessions.push({ budgetId: budget.id, sessionId });
     const rpcUrl = `/remote/${budget.id}/${sessionId}/rpc`;
+
+    await request(server)
+      .post('/remote/session/open')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ protocolVersion: 1, budgetId: budget.id, readOnly: 'true' })
+      .expect(400);
+    const readOnly = await request(server)
+      .post('/remote/session/open')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ protocolVersion: 1, budgetId: budget.id, readOnly: true })
+      .expect(201);
+    expect(readOnly.body.readOnly).toBe(true);
+    openedSessions.push({
+      budgetId: budget.id,
+      sessionId: readOnly.body.sessionId,
+    });
+    const readOnlyRpc = `/remote/${budget.id}/${readOnly.body.sessionId}/rpc`;
+    const refused = await request(server)
+      .post(readOnlyRpc)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        protocolVersion: 1,
+        requestId: 'readonly-account-write',
+        operation: 'account.create',
+        payload: { account: { name: 'Must not be created' } },
+      })
+      .expect(403);
+    expect(refused.body.error.code).toBe('read-only-session');
+    const emptyAccounts = await request(server)
+      .post(readOnlyRpc)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        protocolVersion: 1,
+        requestId: 'readonly-list',
+        operation: 'accounts.list',
+        payload: {},
+      })
+      .expect(200);
+    expect(emptyAccounts.body.result).toEqual([]);
 
     const createdAccount = await request(server)
       .post(rpcUrl)
@@ -308,6 +348,39 @@ describe('remote session authorization', () => {
         (row: { date: string }) => row.date === '2026-01-12',
       ),
     ).toHaveLength(1);
+
+    for (const [requestId, calculation, expected] of [
+      ['ui-count', { $count: '*' }, 1],
+      ['ui-balance', { $sum: '$amount' }, -1250],
+    ] as const) {
+      const result = await request(server)
+        .post(readOnlyRpc)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          protocolVersion: 1,
+          requestId,
+          operation: 'ui.query',
+          payload: {
+            query: q('transactions')
+              .filter({ account: accountId })
+              .calculate(calculation)
+              .serialize(),
+          },
+        })
+        .expect(200);
+      expect(result.body.result.data).toBe(expected);
+    }
+    const filters = await request(server)
+      .post(readOnlyRpc)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        protocolVersion: 1,
+        requestId: 'ui-filter-list',
+        operation: 'ui.query',
+        payload: { query: q('transaction_filters').select('*').serialize() },
+      })
+      .expect(200);
+    expect(filters.body.result.data).toEqual([]);
 
     for (const table of [
       'transactions',

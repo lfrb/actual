@@ -50,6 +50,23 @@ export const REMOTE_CAPABILITIES = {
 } as const;
 
 export const REMOTE_OPERATION_REGISTRY = {
+  'ui.accounts': { handler: 'accounts-get', write: false, payload: [] },
+  'ui.categories': { handler: 'get-categories', write: false, payload: [] },
+  'ui.payees': { handler: 'payees-get', write: false, payload: [] },
+  'ui.tags': { handler: 'tags-get', write: false, payload: [] },
+  'ui.account-groups': {
+    handler: 'account-groups-get',
+    write: false,
+    payload: [],
+  },
+  'ui.bounds': { handler: 'get-budget-bounds', write: false, payload: [] },
+  'ui.cell': {
+    handler: 'get-cell',
+    write: false,
+    payload: ['sheetName', 'name'],
+  },
+  'ui.note': { handler: 'notes-get', write: false, payload: ['id'] },
+  'ui.query': { handler: 'query', write: false, payload: ['query'] },
   'accounts.list': { handler: 'api/accounts-get', write: false, payload: [] },
   'account.balance': {
     handler: 'api/account-balance',
@@ -452,6 +469,29 @@ function validatePayload(
   operation: RemoteV1Operation,
   payload: Record<string, unknown>,
 ) {
+  if (
+    [
+      'ui.accounts',
+      'ui.categories',
+      'ui.payees',
+      'ui.tags',
+      'ui.account-groups',
+      'ui.bounds',
+    ].includes(operation)
+  ) {
+    return Object.keys(payload).length === 0;
+  }
+  if (operation === 'ui.note') return validId(payload.id);
+  if (operation === 'ui.cell') {
+    return [payload.sheetName, payload.name].every(
+      value =>
+        typeof value === 'string' &&
+        value.length > 0 &&
+        value.length <= 256 &&
+        /^[\w.:-]+$/.test(value),
+    );
+  }
+  if (operation === 'ui.query') return validateAql(payload.query, true);
   if (operation === 'transactions.list') {
     return (
       optionalId(payload.accountId) &&
@@ -803,7 +843,7 @@ function validTransaction(
   return true;
 }
 
-function validateAql(value: unknown): boolean {
+function validateAql(value: unknown, ui = false): boolean {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, [
@@ -823,16 +863,57 @@ function validateAql(value: unknown): boolean {
   ) {
     return false;
   }
-  if (typeof value.table !== 'string' || !SAFE_AQL_TABLES.has(value.table)) {
+  const uiColumns: Record<string, readonly string[]> = {
+    transaction_filters: [
+      'id',
+      'name',
+      'conditions',
+      'conditions_op',
+      'tombstone',
+    ],
+  };
+  if (
+    typeof value.table !== 'string' ||
+    (!SAFE_AQL_TABLES.has(value.table) &&
+      !(ui && Object.hasOwn(uiColumns, value.table)))
+  ) {
     return false;
   }
   if (
     (value.rawMode !== undefined && value.rawMode !== false) ||
     (value.withDead !== undefined && value.withDead !== false) ||
     (value.validateRefs !== undefined && value.validateRefs !== true) ||
-    (value.calculation !== undefined && value.calculation !== false)
+    (!ui && value.calculation !== undefined && value.calculation !== false)
   ) {
     return false;
+  }
+  const calculation = value.calculation ?? false;
+  if (typeof calculation !== 'boolean') return false;
+  if (calculation) {
+    if (
+      !ui ||
+      !Array.isArray(value.selectExpressions) ||
+      value.selectExpressions.length !== 1
+    ) {
+      return false;
+    }
+    const selected = value.selectExpressions[0];
+    if (
+      !isRecord(selected) ||
+      Object.keys(selected).length !== 1 ||
+      !isRecord(selected.result) ||
+      Object.keys(selected.result).length !== 1
+    ) {
+      return false;
+    }
+    if (
+      !(
+        selected.result.$count === '*' ||
+        (value.table === 'transactions' && selected.result.$sum === '$amount')
+      )
+    ) {
+      return false;
+    }
   }
   if (
     value.tableOptions !== undefined &&
@@ -840,7 +921,8 @@ function validateAql(value: unknown): boolean {
       Object.keys(value.tableOptions).some(key => key !== 'splits') ||
       (value.tableOptions.splits !== undefined &&
         value.tableOptions.splits !== 'grouped' &&
-        value.tableOptions.splits !== 'none'))
+        value.tableOptions.splits !== 'none' &&
+        !(ui && ['inline', 'all'].includes(String(value.tableOptions.splits)))))
   ) {
     return false;
   }
@@ -869,8 +951,24 @@ function validateAql(value: unknown): boolean {
   ) {
     return false;
   }
-  const fields = SAFE_AQL_COLUMNS[value.table];
+  const columns = SAFE_AQL_COLUMNS[value.table] ?? uiColumns[value.table];
+  const fields =
+    ui && value.table === 'transactions'
+      ? [
+          ...columns,
+          'account.closed',
+          'account.offbudget',
+          'account.name',
+          'account.account_group_id',
+          'payee.name',
+          'payee.transfer_acct',
+          'payee.transfer_acct.name',
+          'payee.transfer_acct.offbudget',
+          'category.name',
+        ]
+      : columns;
   if (
+    !calculation &&
     value.selectExpressions !== undefined &&
     (!Array.isArray(value.selectExpressions) ||
       !value.selectExpressions.every(
@@ -889,7 +987,7 @@ function validateAql(value: unknown): boolean {
         (Array.isArray(value[key]) &&
           (value[key] as unknown[]).length <= 64 &&
           (value[key] as unknown[]).every(item =>
-            validateAqlExpression(item, 0, fields, () => ++nodes <= 500),
+            validateAqlExpression(item, 0, fields, () => ++nodes <= 500, ui),
           )),
     )
   ) {
@@ -901,17 +999,20 @@ function validateAql(value: unknown): boolean {
   query.offset = query.offset == null ? 0 : query.offset;
   query.tableOptions = query.tableOptions ?? {};
   query.filterExpressions = query.filterExpressions ?? [];
-  query.selectExpressions =
-    (query.selectExpressions as unknown[] | undefined)?.includes('*') ||
-    !(query.selectExpressions as unknown[] | undefined)?.length
-      ? fields.filter(field => !['raw_synced_data', 'error'].includes(field))
+  query.selectExpressions = calculation
+    ? value.selectExpressions
+    : (query.selectExpressions as unknown[] | undefined)?.includes('*') ||
+        !(query.selectExpressions as unknown[] | undefined)?.length
+      ? columns.filter(
+          field => field !== 'raw_synced_data' && (ui || field !== 'error'),
+        )
       : query.selectExpressions;
   query.groupExpressions = query.groupExpressions ?? [];
   query.orderExpressions = query.orderExpressions ?? [];
   query.rawMode = false;
   query.withDead = false;
   query.validateRefs = true;
-  query.calculation = false;
+  query.calculation = calculation;
   return true;
 }
 
@@ -920,6 +1021,7 @@ function validateAqlExpression(
   depth: number,
   fields: readonly string[],
   spend: () => boolean,
+  ui = false,
 ): boolean {
   if (depth > 8 || !spend()) return false;
   if (
@@ -938,11 +1040,14 @@ function validateAqlExpression(
   if (Array.isArray(value)) {
     return (
       value.length <= 100 &&
-      value.every(item => validateAqlExpression(item, depth + 1, fields, spend))
+      value.every(item =>
+        validateAqlExpression(item, depth + 1, fields, spend, ui),
+      )
     );
   }
   if (!isRecord(value)) return false;
   const ops = new Set([
+    ...(ui ? ['$transform'] : []),
     '$and',
     '$or',
     '$eq',
@@ -955,11 +1060,31 @@ function validateAqlExpression(
     '$like',
     '$notlike',
   ]);
-  return Object.entries(value).every(
-    ([key, item]) =>
-      !['__proto__', 'prototype', 'constructor'].includes(key) &&
-      (key.startsWith('$') ? ops.has(key) : fields.includes(key)) &&
-      validateAqlExpression(item, depth + 1, fields, spend),
+  return Object.entries(value).every(([key, item]) =>
+    ui && key === '$transform'
+      ? validUiTransform(item)
+      : !['__proto__', 'prototype', 'constructor'].includes(key) &&
+        (key.startsWith('$') ? ops.has(key) : fields.includes(key)) &&
+        validateAqlExpression(item, depth + 1, fields, spend, ui),
+  );
+}
+
+function validUiTransform(value: unknown): boolean {
+  if (value === '$abs') return true;
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 1 ||
+    !isRecord(value.$abs) ||
+    Object.keys(value.$abs).length !== 1
+  ) {
+    return false;
+  }
+  const division = value.$abs.$idiv;
+  return (
+    Array.isArray(division) &&
+    division.length === 2 &&
+    division[0] === '$' &&
+    division[1] === 100
   );
 }
 

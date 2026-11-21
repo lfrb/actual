@@ -32,9 +32,10 @@ app.post('/session/open', async (req, res) => {
   if (
     !req.body ||
     Object.keys(req.body).some(
-      key => !['budgetId', 'protocolVersion'].includes(key),
+      key => !['budgetId', 'protocolVersion', 'readOnly'].includes(key),
     ) ||
-    req.body.protocolVersion !== 1
+    req.body.protocolVersion !== 1 ||
+    (req.body.readOnly !== undefined && typeof req.body.readOnly !== 'boolean')
   ) {
     res.status(400).json({ status: 'error', reason: 'invalid-request' });
     return;
@@ -59,6 +60,7 @@ app.post('/session/open', async (req, res) => {
       record.runtime.engine_directory_id,
       auth.userId,
       auth.credentialId,
+      req.body.readOnly === true,
     );
     const currentAuth = authenticate(req, res);
     if (
@@ -77,6 +79,7 @@ app.post('/session/open', async (req, res) => {
       protocolVersion: 1,
       sessionId: session.id,
       budgetId,
+      readOnly: session.readOnly,
     });
   } catch (error) {
     sendManagerError(res, error);
@@ -282,6 +285,7 @@ app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
       'remote-operation-timeout': 'operation-timeout',
       'remote-operation-not-dispatched': 'operation-not-dispatched',
       'remote-session-invalid': 'unauthorized',
+      'remote-read-only-session': 'read-only-session',
       'remote-request-too-large': 'request-too-large',
       'remote-queue-full': 'queue-full',
       'remote-result-too-large': 'result-too-large',
@@ -289,19 +293,21 @@ app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
     };
     const code = remoteErrorCodes[message] ?? 'operation-failed';
     const status =
-      code === 'unauthorized'
-        ? 401
-        : code === 'request-id-conflict'
-          ? 409
-          : code === 'operation-result-expired'
-            ? 410
-            : code === 'request-too-large' || code === 'result-too-large'
-              ? 413
-              : code === 'queue-full'
-                ? 429
-                : code === 'operation-timeout'
-                  ? 504
-                  : 503;
+      code === 'read-only-session'
+        ? 403
+        : code === 'unauthorized'
+          ? 401
+          : code === 'request-id-conflict'
+            ? 409
+            : code === 'operation-result-expired'
+              ? 410
+              : code === 'request-too-large' || code === 'result-too-large'
+                ? 413
+                : code === 'queue-full'
+                  ? 429
+                  : code === 'operation-timeout'
+                    ? 504
+                    : 503;
     res.status(status).json({
       protocolVersion: 1,
       requestId:

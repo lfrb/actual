@@ -21,6 +21,7 @@ export type RemoteWorkerSession = {
   id: string;
   userId: string;
   credentialId: string;
+  readOnly: boolean;
   lastUsedAt: number;
 };
 
@@ -100,6 +101,7 @@ export class RemoteWorkerManager {
     engineDirectoryId: string,
     userId: string,
     credentialId: string,
+    readOnly = false,
   ): Promise<RemoteWorkerSession> {
     if (this.closing) throw new Error('remote-worker-manager-closed');
     assertOpaqueId(fileId);
@@ -114,6 +116,7 @@ export class RemoteWorkerManager {
       id: randomUUID(),
       userId,
       credentialId,
+      readOnly,
       lastUsedAt: Date.now(),
     };
     worker.sessions.set(session.id, session);
@@ -167,6 +170,7 @@ export class RemoteWorkerManager {
       id: sessionId,
       userId,
       credentialId,
+      readOnly: true,
       lastUsedAt: Date.now(),
     });
     this.scheduleIdleCheck(fileId, worker);
@@ -206,6 +210,7 @@ export class RemoteWorkerManager {
       id: sessionId,
       userId,
       credentialId,
+      readOnly: true,
       lastUsedAt: Date.now(),
     });
     this.scheduleIdleCheck(fileId, worker);
@@ -268,6 +273,9 @@ export class RemoteWorkerManager {
       const id = randomUUID();
       const session = worker.sessions.get(sessionId);
       if (!session) throw new Error('remote-operation-not-dispatched');
+      if (isWrite && session.readOnly) {
+        throw new Error('remote-read-only-session');
+      }
       const message =
         operation === '__journal_status'
           ? {

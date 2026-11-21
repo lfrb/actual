@@ -248,7 +248,7 @@ async function dispatchRpc(message: unknown) {
     const args =
       request.operation === 'rule.delete'
         ? request.payload.id
-        : request.operation === 'aql.query'
+        : request.operation === 'aql.query' || request.operation === 'ui.query'
           ? request.payload.query
           : request.operation === 'account.balance' && request.payload.cutoff
             ? {
