@@ -127,6 +127,7 @@ import type {
 } from '#hooks/useDragDrop';
 import { useLocalPref } from '#hooks/useLocalPref';
 import { useMergedRefs } from '#hooks/useMergedRefs';
+import { useMetadataPref } from '#hooks/useMetadataPref';
 import { usePrevious } from '#hooks/usePrevious';
 import { useProperFocus } from '#hooks/useProperFocus';
 import { useSelectedDispatch, useSelectedItems } from '#hooks/useSelected';
@@ -724,7 +725,7 @@ function PayeeCell({
             borderRadius: 4,
             flex: 1,
             padding: 4,
-            color: theme.pageTextSubdued,
+            color: valueStyle?.color ?? theme.pageTextSubdued,
           }}
         >
           <PayeeIcons
@@ -1086,7 +1087,7 @@ const Transaction = memo(function Transaction({
   matched,
   pulse,
   expanded,
-  focusedField,
+  focusedField: focusedFieldProp,
   categoryGroups,
   payees,
   accounts,
@@ -1094,7 +1095,7 @@ const Transaction = memo(function Transaction({
   dateFormat = 'MM/dd/yyyy',
   hideFraction,
   onSave,
-  onEdit,
+  onEdit: onEditProp,
   onDelete,
   onBatchDelete,
   onBatchDuplicate,
@@ -1131,6 +1132,11 @@ const Transaction = memo(function Transaction({
   amountColumnWidths,
 }: TransactionProps) {
   const { t } = useTranslation();
+  const [readOnly] = useMetadataPref('remoteReadOnly');
+  const focusedField = readOnly ? null : focusedFieldProp;
+  const onEdit: TransactionProps['onEdit'] = (id, field) => {
+    if (!readOnly) onEditProp(id, field);
+  };
 
   const dispatch = useDispatch();
   const dispatchSelected = useSelectedDispatch();
@@ -1142,6 +1148,7 @@ const Transaction = memo(function Transaction({
     serializeTransaction(originalTransaction, showZeroInDeposit),
   );
   const isPreview = isPreviewId(transaction.id);
+  const isReadOnly = readOnly || isPreview;
 
   if (
     originalTransaction !== prevTransaction ||
@@ -1164,6 +1171,7 @@ const Transaction = memo(function Transaction({
   const transferDateSyncSeq = useRef(0);
 
   const onUpdate: TransactionUpdateFunction = async (name, value) => {
+    if (readOnly) return;
     // Had some issues with this is called twice which is a problem now that we are showing a warning
     // modal if the transaction is locked. I added a boolean to guard against showing the modal twice.
     // I'm still not completely happy with how the cells update pre/post modal. Sometimes you have to
@@ -1458,6 +1466,7 @@ const Transaction = memo(function Transaction({
     };
   }, [isSelectingBalance]);
   const allowRowDrag =
+    !readOnly &&
     canDrag &&
     !isSelectingBalance &&
     !isOnlyTransactionOnDate &&
@@ -1564,6 +1573,7 @@ const Transaction = memo(function Transaction({
   );
 
   useTransactionRowContextActions({
+    enabled: !readOnly,
     rowRef: triggerRef,
     transaction,
     getTransaction: id =>
@@ -1728,7 +1738,7 @@ const Transaction = memo(function Transaction({
             }}
             valueStyle={valueStyle}
             exposed={focusedField === 'account'}
-            onExpose={name => !isPreview && onEdit(id, name)}
+            onExpose={name => !isReadOnly && onEdit(id, name)}
             onUpdate={async value => {
               // Only ever allow non-null values
               if (value) {
@@ -1771,11 +1781,13 @@ const Transaction = memo(function Transaction({
               payee =>
                 !payee.transfer_acct || payee.transfer_acct !== accountId,
             )}
-            valueStyle={valueStyle}
+            valueStyle={
+              readOnly && isParent ? { color: theme.tableText } : valueStyle
+            }
             transaction={transaction}
             transferAccountsByTransaction={transferAccountsByTransaction}
             importedPayee={importedPayee}
-            isPreview={isPreview}
+            isPreview={isReadOnly}
             onEdit={onEdit}
             onUpdate={onUpdate}
             onCreatePayee={onCreatePayee}
@@ -1792,12 +1804,12 @@ const Transaction = memo(function Transaction({
             scheduleNote={isPreview ? schedule?.name : null}
             focused={focusedField === 'notes'}
             valueStyle={valueStyle}
-            isReadOnly={isPreview}
-            onClickTag={onNotesTagClick}
+            isReadOnly={isReadOnly}
+            onClickTag={readOnly ? undefined : onNotesTagClick}
             onUpdate={value => {
               onUpdate('notes', value?.trim());
             }}
-            onExpose={name => !isPreview && onEdit(id, name)}
+            onExpose={name => !isReadOnly && onEdit(id, name)}
           />
         );
       case 'group':
@@ -1876,7 +1888,7 @@ const Transaction = memo(function Transaction({
                 },
               }}
               disabled={isTemporaryId(transaction.id)}
-              onEdit={() => !isPreview && onEdit(id, 'category')}
+              onEdit={() => !isReadOnly && onEdit(id, 'category')}
               onSelect={() => onToggleSplit(id)}
             >
               <View
@@ -1887,7 +1899,7 @@ const Transaction = memo(function Transaction({
                   borderRadius: 4,
                   flex: 1,
                   padding: 4,
-                  color: theme.pageTextSubdued,
+                  color: readOnly ? 'inherit' : theme.pageTextSubdued,
                 }}
               >
                 {isParent && (
@@ -1957,18 +1969,20 @@ const Transaction = memo(function Transaction({
               value
                 ? (getCategoriesById(categoryGroups)[value]?.name ?? '')
                 : transaction.id
-                  ? t('Categorize')
+                  ? readOnly
+                    ? t('Uncategorized')
+                    : t('Categorize')
                   : ''
             }
             exposed={focusedField === 'category'}
-            onExpose={name => !isPreview && onEdit(id, name)}
+            onExpose={name => !isReadOnly && onEdit(id, name)}
             valueStyle={
               !categoryId
                 ? {
                     // uncategorized transaction
                     fontStyle: 'italic',
                     fontWeight: 300,
-                    color: theme.formInputTextHighlight,
+                    color: readOnly ? 'inherit' : theme.formInputTextHighlight,
                   }
                 : valueStyle
             }
@@ -2029,7 +2043,7 @@ const Transaction = memo(function Transaction({
             valueStyle={valueStyle}
             textAlign="right"
             title={debit}
-            onExpose={name => !isPreview && onEdit(id, name)}
+            onExpose={name => !isReadOnly && onEdit(id, name)}
             style={{
               ...(isParent && { fontStyle: 'italic' }),
               ...styles.tnum,
@@ -2064,7 +2078,7 @@ const Transaction = memo(function Transaction({
             valueStyle={valueStyle}
             textAlign="right"
             title={credit}
-            onExpose={name => !isPreview && onEdit(id, name)}
+            onExpose={name => !isReadOnly && onEdit(id, name)}
             style={{
               ...(isParent && { fontStyle: 'italic' }),
               ...styles.tnum,
@@ -2116,7 +2130,7 @@ const Transaction = memo(function Transaction({
             id={id}
             focused={focusedField === 'cleared'}
             selected={selected}
-            isPreview={isPreview}
+            isPreview={isReadOnly}
             status={
               isPreview
                 ? (previewStatus as StatusTypes)
@@ -2214,7 +2228,7 @@ const Transaction = memo(function Transaction({
           ...(isBeingDragged && { opacity: 0.5 }),
         }}
       >
-        {splitError && listContainerRef?.current && (
+        {!readOnly && splitError && listContainerRef?.current && (
           <Popover
             triggerRef={triggerRef}
             isOpen
@@ -2316,7 +2330,7 @@ type NotesCellProps = {
   valueStyle: CSSProperties | null;
   isReadOnly: boolean;
   onUpdate: (value: string) => void;
-  onClickTag: (tag: string) => void;
+  onClickTag?: (tag: string) => void;
   onExpose: (name: string) => void;
 };
 
@@ -3266,6 +3280,7 @@ export const TransactionTable = forwardRef(
     ref: ForwardedRef<TableHandleRef<TransactionEntity>>,
   ) => {
     const { t } = useTranslation();
+    const [readOnly] = useMetadataPref('remoteReadOnly');
 
     const dispatch = useDispatch();
     const [showHiddenCategories] = useLocalPref('budget.showHiddenCategories');
@@ -3800,6 +3815,7 @@ export const TransactionTable = forwardRef(
     }
 
     function getFields(item: TransactionEntity | undefined, fields: string[]) {
+      if (readOnly) return [];
       fields = item?.is_child
         ? [
             'select',
@@ -4297,7 +4313,7 @@ export const TransactionTable = forwardRef(
 
     return (
       <DisplayPayeeProvider transactions={displayPayeeTransactions}>
-        <SchedulesProvider query={allSchedulesQuery}>
+        <SchedulesProvider query={allSchedulesQuery} disabled={readOnly}>
           <TransactionTableInner
             tableRef={mergedRef}
             listContainerRef={listContainerRef}

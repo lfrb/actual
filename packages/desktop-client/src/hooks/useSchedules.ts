@@ -54,6 +54,7 @@ function loadStatuses(
 }
 export type UseSchedulesProps = {
   query?: Query;
+  enabled?: boolean;
 };
 type ScheduleData = {
   schedules: readonly ScheduleEntity[];
@@ -67,6 +68,7 @@ export type UseSchedulesResult = ScheduleData & {
 
 export function useSchedules({
   query,
+  enabled = true,
 }: UseSchedulesProps = {}): UseSchedulesResult {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | undefined>(undefined);
@@ -85,6 +87,11 @@ export function useSchedules({
 
     setError(undefined);
 
+    if (!enabled) {
+      setData({ schedules: [], statuses: new Map(), statusLabels: new Map() });
+      setIsLoading(false);
+      return;
+    }
     if (!query) {
       // This usually means query is not yet set on this render cycle.
       return;
@@ -139,7 +146,7 @@ export function useSchedules({
       scheduleQueryRef.current?.unsubscribe();
       statusQueryRef.current?.unsubscribe();
     };
-  }, [query, upcomingLength]);
+  }, [query, upcomingLength, enabled]);
 
   return {
     isLoading,

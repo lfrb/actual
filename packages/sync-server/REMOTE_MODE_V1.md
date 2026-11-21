@@ -5,7 +5,42 @@ worker/session lifecycle, bounded financial RPC, durable operation journal, and
 transaction creation outbox.
 SDK remote activation is not implemented here.
 
+The web app can open existing remote budgets read-only using its normal server
+login. It reuses the account registers and transaction table, with explicit
+Refresh and Close actions. Editing, reports, the budget worksheet, schedules,
+mobile/Electron remote UI, and live cross-client updates are deferred. Browser
+query results and view preferences are transient; no local budget database or
+conventional file download is created for the remote budget.
+
+To try this without touching an existing installation, run from the repository
+root:
+
+```sh
+yarn workspace @actual-app/sync-server build
+yarn workspace @actual-app/web generate:i18n
+yarn workspace @actual-app/web build:browser
+node packages/sync-server/test-support/launch-remote-ui.mjs
+```
+
+Open `http://127.0.0.1:21306`, sign in with `remote-ui-demo`, and choose
+**Remote UI demo**. The launcher clears inherited `ACTUAL_*` configuration and
+creates a fresh temporary data directory with synthetic accounts and transactions.
+Stop it with Ctrl+C to remove that directory. An optional port argument changes
+the listening port. The automated browser check uses the same fixture:
+
+```sh
+yarn workspace @actual-app/web exec playwright test -c playwright.remote.config.ts
+```
+
 ## Protocol
+
+The web UI opens sessions with optional `readOnly: true`; the server echoes the
+flag and rejects every write operation for that session with
+`read-only-session` (403). Omitting the flag preserves writable RPC sessions.
+The `ui.*` registry contains native account/category/payee/tag reads, bounded AQL,
+notes, and spreadsheet cells. It does not accept arbitrary engine handler names.
+Generated spreadsheet queries remain private to each browser session, rather
+than replacing named queries inside the shared hosted worker.
 
 Financial RPC uses HTTPS JSON and bearer authentication. Requests carry
 `protocolVersion: 1`, a client-generated `requestId` (1 to 128 characters), an

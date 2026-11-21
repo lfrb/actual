@@ -60,7 +60,8 @@ type BackupUpdatedEvent = Backup[];
 
 type CellsChangedEvent = Array<{
   name: string;
-  value: string | number | boolean;
+  // Dynamic AQL cells can also hold arrays, objects, or null.
+  value: unknown;
 }>;
 
 type FallbackWriteErrorEvent = undefined;
@@ -116,6 +117,7 @@ type StartLoadEvent = undefined;
 type ApiFetchRedirectedEvent = undefined;
 
 export type ServerEvents = {
+  'remote-ui-error': { code: string };
   'backups-updated': BackupUpdatedEvent;
   'cells-changed': CellsChangedEvent;
   'fallback-write-error': FallbackWriteErrorEvent;

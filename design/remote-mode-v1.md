@@ -16,7 +16,9 @@ server-enforced mode per budget. Do not support both modes for the same budget.
 
 The PoC includes owner-authorized SDK access, persistent server budgets, queries,
 transaction creation/editing/import, and HTTP notifications for newly created
-transactions. The Actual UI is a later iteration. Multiple sessions and integrations
+transactions. The initial implementation excluded the Actual UI; the follow-up
+[read-only web UI milestone](remote-ui-v1.md) now adapts the existing account and
+transaction screens. Multiple sessions and integrations
 of one owner are allowed; sharing a remote budget between different users is not.
 End-to-end encrypted budgets cannot use remote mode. Session-local undo is the
 future contract; remote undo/redo is explicitly unsupported in the PoC.
@@ -30,23 +32,23 @@ Revocation prevents future service access; it cannot erase previously returned d
 Paths below are relative to the repository root. Function names are the durable
 anchors; line numbers will change during implementation.
 
-| Boundary | Current implementation | Consequence |
-| --- | --- | --- |
-| SDK initialization | `packages/api/index.ts`, `init`, `shutdown` | Imports and initializes the local engine; shutdown attempts sync and closes the budget. Remote mode needs a separate initialization/lifecycle path. |
-| SDK request dispatch | `packages/api/methods.ts`; `packages/loot-core/src/platform/client/connection/index.api.ts`, `send` | Methods send named requests; Node transport directly calls `lib.send`. This is a useful transport seam, but changing only UI dispatch will not change the SDK. |
-| Engine dispatch | `packages/loot-core/src/server/main.ts`, `lib.send`; `server/mutators.ts`, `runHandler`, `runMutator` | Mutations are queued sequentially with process-global context. Serialization does not make an entire command a SQLite transaction. |
-| Queries | `packages/desktop-client/src/queries/aqlQuery.ts`; `packages/loot-core/src/server/aql/index.ts`, `aqlQuery` | UI sends serialized AQL; engine compiles and executes it. Transport serialized query data, never executable code or raw SQL. |
-| Transaction commands | `packages/loot-core/src/server/transactions/app.ts`; `server/api.ts` | UI batch operations and SDK API handlers reach shared transaction logic. Preserve those domain handlers. |
-| Transaction processing | `packages/loot-core/src/server/transactions/index.ts`, `batchUpdateTransactions` | Initial writes and transfer post-processing use separate `batchMessages` calls; learning rules can add work. One logical command can commit multiple batches. |
-| Database writes | `packages/loot-core/src/server/db/index.ts`, `insertTransaction`, `updateTransaction`, `insertWithSchema`, `updateWithSchema`, `delete_` | Ordinary domain writes produce messages through `sendMessages`. Do not substitute arbitrary SQL writes for domain operations. |
-| Batching | `packages/loot-core/src/server/sync/index.ts`, `batchMessages`, `_sendMessages` | Batching accumulates messages, then applies them and schedules network sync. It is not a general async SQLite transaction wrapper. |
-| Actual commit boundary | Same file, `_applyMessages`, `applyInTransaction` | Affected rows are read before/after inside a synchronous SQLite transaction, together with writes and enabled CRDT bookkeeping. This is the candidate atomic outbox boundary. |
-| Post-commit effects | Same file, after `db.transaction(...)` | Undo history, spreadsheet invalidation, listeners, and `app.events.emit('sync', {type: 'applied', ...})` happen after commit. They can fail after data has committed. A rejected command does not prove rollback. |
-| Special import path | Same file, `applyMessagesForImport` | Syncing mode `import` bypasses the normal before/after snapshots and listeners. Whole-budget import must be treated separately from transaction import. |
-| Network scheduling | Same file, `scheduleFullSync`; `server/budgetfiles/app.ts`, `_loadBudget`, `syncBudget` | Ordinary writes schedule sync; budget loading chooses sync mode based on `getServer()` and calls `cloudStorage.possiblyUpload()`. Remote hosting needs explicit lifecycle policy. |
-| Engine-to-client events | `packages/loot-core/src/platform/server/connection/index.api.ts` | Node SDK transport discards most events, logging only selected sync warnings. A remote event adapter is required for future live UI support. |
-| Undo | `packages/loot-core/src/server/undo.ts`, `MESSAGE_HISTORY`, `CURSOR`; `server/mutators.ts`, `currentContext` | History/context are process-global. An undo tag is not an authorization or session-isolation boundary. Do not expose existing undo to shared workers. |
-| Existing server file APIs | `packages/sync-server/src/app-sync.ts` | Sync, upload, download, reset, encryption-key, listing, and deletion routes require mode-aware handling. Blocking only `/sync` is insufficient. |
+| Boundary                  | Current implementation                                                                                                                   | Consequence                                                                                                                                                                                                       |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SDK initialization        | `packages/api/index.ts`, `init`, `shutdown`                                                                                              | Imports and initializes the local engine; shutdown attempts sync and closes the budget. Remote mode needs a separate initialization/lifecycle path.                                                               |
+| SDK request dispatch      | `packages/api/methods.ts`; `packages/loot-core/src/platform/client/connection/index.api.ts`, `send`                                      | Methods send named requests; Node transport directly calls `lib.send`. This is a useful transport seam, but changing only UI dispatch will not change the SDK.                                                    |
+| Engine dispatch           | `packages/loot-core/src/server/main.ts`, `lib.send`; `server/mutators.ts`, `runHandler`, `runMutator`                                    | Mutations are queued sequentially with process-global context. Serialization does not make an entire command a SQLite transaction.                                                                                |
+| Queries                   | `packages/desktop-client/src/queries/aqlQuery.ts`; `packages/loot-core/src/server/aql/index.ts`, `aqlQuery`                              | UI sends serialized AQL; engine compiles and executes it. Transport serialized query data, never executable code or raw SQL.                                                                                      |
+| Transaction commands      | `packages/loot-core/src/server/transactions/app.ts`; `server/api.ts`                                                                     | UI batch operations and SDK API handlers reach shared transaction logic. Preserve those domain handlers.                                                                                                          |
+| Transaction processing    | `packages/loot-core/src/server/transactions/index.ts`, `batchUpdateTransactions`                                                         | Initial writes and transfer post-processing use separate `batchMessages` calls; learning rules can add work. One logical command can commit multiple batches.                                                     |
+| Database writes           | `packages/loot-core/src/server/db/index.ts`, `insertTransaction`, `updateTransaction`, `insertWithSchema`, `updateWithSchema`, `delete_` | Ordinary domain writes produce messages through `sendMessages`. Do not substitute arbitrary SQL writes for domain operations.                                                                                     |
+| Batching                  | `packages/loot-core/src/server/sync/index.ts`, `batchMessages`, `_sendMessages`                                                          | Batching accumulates messages, then applies them and schedules network sync. It is not a general async SQLite transaction wrapper.                                                                                |
+| Actual commit boundary    | Same file, `_applyMessages`, `applyInTransaction`                                                                                        | Affected rows are read before/after inside a synchronous SQLite transaction, together with writes and enabled CRDT bookkeeping. This is the candidate atomic outbox boundary.                                     |
+| Post-commit effects       | Same file, after `db.transaction(...)`                                                                                                   | Undo history, spreadsheet invalidation, listeners, and `app.events.emit('sync', {type: 'applied', ...})` happen after commit. They can fail after data has committed. A rejected command does not prove rollback. |
+| Special import path       | Same file, `applyMessagesForImport`                                                                                                      | Syncing mode `import` bypasses the normal before/after snapshots and listeners. Whole-budget import must be treated separately from transaction import.                                                           |
+| Network scheduling        | Same file, `scheduleFullSync`; `server/budgetfiles/app.ts`, `_loadBudget`, `syncBudget`                                                  | Ordinary writes schedule sync; budget loading chooses sync mode based on `getServer()` and calls `cloudStorage.possiblyUpload()`. Remote hosting needs explicit lifecycle policy.                                 |
+| Engine-to-client events   | `packages/loot-core/src/platform/server/connection/index.api.ts`                                                                         | Node SDK transport discards most events, logging only selected sync warnings. A remote event adapter is required for future live UI support.                                                                      |
+| Undo                      | `packages/loot-core/src/server/undo.ts`, `MESSAGE_HISTORY`, `CURSOR`; `server/mutators.ts`, `currentContext`                             | History/context are process-global. An undo tag is not an authorization or session-isolation boundary. Do not expose existing undo to shared workers.                                                             |
+| Existing server file APIs | `packages/sync-server/src/app-sync.ts`                                                                                                   | Sync, upload, download, reset, encryption-key, listing, and deletion routes require mode-aware handling. Blocking only `/sync` is insufficient.                                                                   |
 
 ### Verified transaction import and direct-add paths
 
@@ -271,16 +273,19 @@ Deletion of a budget cancels delivery and removes its runtime state.
 
 ## Implementation sequence and acceptance gates
 
-| Step | Work | Required evidence |
-| --- | --- | --- |
-| 1 | Define protocol, capability matrix, mode metadata, migrations, bootstrap lifecycle | Existing budgets retain behavior; remote modes reject encrypted input and conventional replication routes. |
-| 2 | Refactor SDK dispatcher with local default and separate remote initialization | Local SDK regression tests pass; remote package loads without initializing SQLite or reading/writing a budget cache. |
-| 3 | Add worker manager, hosted policy, ownership enforcement, session lifecycle | Concurrent opens share one worker; different budgets are isolated; restart preserves data; revoked access stops working; shutdown of one session leaves others usable. |
-| 4 | Add bounded AQL/read RPC and financial write allowlist | Synthetic local/remote parity for queries, categories, tags, rules, transactions, splits, and transfers; scoped credentials and malformed requests tested. |
-| 5 | Add operation journal and interrupted-operation recovery | Lost response after success yields no duplicate write; payload mismatch rejected; crash between transfer batches returns explicit interrupted status, never blindly replays. |
-| 6 | Add commit candidate hook and durable outbox | Rollback produces neither rows nor events; process death after commit retains events; match-only reimport produces no creation; transfer/split normalization tested. |
-| 7 | Add webhook dispatcher and administration config | Local recording receiver receives signed POST for creation and import; failed delivery retries after restart; duplicate delivery retains event ID; failures never undo committed data. |
-| 8 | Package and document disposable PoC | Published SDK entry point works; standard local/synced regression suite passes; documented bootstrap, credentials, sample query/write/import, receiver, restart, and cleanup procedure. |
+| Step | Work                                                                               | Required evidence                                                                                                                                                                       |
+| ---- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Define protocol, capability matrix, mode metadata, migrations, bootstrap lifecycle | Existing budgets retain behavior; remote modes reject encrypted input and conventional replication routes.                                                                              |
+| 2    | Refactor SDK dispatcher with local default and separate remote initialization      | Local SDK regression tests pass; remote package loads without initializing SQLite or reading/writing a budget cache.                                                                    |
+| 3    | Add worker manager, hosted policy, ownership enforcement, session lifecycle        | Concurrent opens share one worker; different budgets are isolated; restart preserves data; revoked access stops working; shutdown of one session leaves others usable.                  |
+| 4    | Add bounded AQL/read RPC and financial write allowlist                             | Synthetic local/remote parity for queries, categories, tags, rules, transactions, splits, and transfers; scoped credentials and malformed requests tested.                              |
+| 5    | Add operation journal and interrupted-operation recovery                           | Lost response after success yields no duplicate write; payload mismatch rejected; crash between transfer batches returns explicit interrupted status, never blindly replays.            |
+| 6    | Add commit candidate hook and durable outbox                                       | Rollback produces neither rows nor events; process death after commit retains events; match-only reimport produces no creation; transfer/split normalization tested.                    |
+| 7    | Add webhook dispatcher and administration config                                   | Local recording receiver receives signed POST for creation and import; failed delivery retries after restart; duplicate delivery retains event ID; failures never undo committed data.  |
+| 8    | Package and document disposable PoC                                                | Published SDK entry point works; standard local/synced regression suite passes; documented bootstrap, credentials, sample query/write/import, receiver, restart, and cleanup procedure. |
+
+Step 7 is deferred by request. Work proceeds with the read-only web UI milestone
+before webhook delivery or completion of the public remote SDK packaging.
 
 Use synthetic/disposable budgets only during implementation. Cover additions through
 SDK handlers and lower-level domain paths, not only mocked endpoint responses.
@@ -294,8 +299,9 @@ protocol, schema changes, tests, and documentation with each implementation comm
 
 ## Deferred iterations
 
-- UI remote budget selection, event transport, live-query invalidation/reconnect,
-  connection failure UX, import/export file streaming, and network-latency audits.
+- UI editing, live event transport/reconnect, import/export file streaming, and
+  network-latency audits. Initial read-only selection, manual refresh, and
+  connection failure states are covered by the web UI milestone.
 - Session-scoped undo/redo with conflict checks: never undo another session's edits;
   refuse/reconcile inversions if another session changed the affected fields.
 - Safe conversion between synced and remote modes, explicit exports for leaving

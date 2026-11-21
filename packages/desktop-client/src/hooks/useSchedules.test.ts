@@ -47,6 +47,14 @@ describe('useSchedules', () => {
     expect(liveQuery).not.toHaveBeenCalled();
   });
 
+  it('does not read schedules when a read-only register disables them', () => {
+    const { result } = renderHook(() =>
+      useSchedules({ query: q('schedules').select('*'), enabled: false }),
+    );
+    expect(liveQuery).not.toHaveBeenCalled();
+    expect(result.current).toMatchObject({ isLoading: false, schedules: [] });
+  });
+
   it('unsubscribes the previous status query when schedules refresh', () => {
     renderHook(() => useSchedules({ query: q('schedules').select('*') }));
 

@@ -5,6 +5,8 @@ import { listen, send } from '@actual-app/core/platform/client/connection';
 import type { Query } from '@actual-app/core/shared/query';
 import { LRUCache } from 'lru-cache';
 
+import { useMetadataPref } from './useMetadataPref';
+
 type SpreadsheetContextValue = ReturnType<typeof makeSpreadsheet>;
 const SpreadsheetContext = createContext<SpreadsheetContextValue | undefined>(
   undefined,
@@ -21,14 +23,29 @@ export function useSpreadsheet() {
 // TODO: Make this generic and replace the Binding type in the desktop-client package.
 type Binding = string | { name: string; query?: Query | undefined };
 
-type CellCacheValue = { name: string; value: string | number | boolean | null };
+type CellCacheValue = { name: string; value: unknown };
 type CellCache = { [name: string]: Promise<CellCacheValue> | null };
 type CellObserverCallback = (node: CellCacheValue) => void;
 type CellObservers = { [name: string]: CellObserverCallback[] };
 
 const GLOBAL_SHEET_NAME = '__global';
 
-function makeSpreadsheet() {
+function makeSpreadsheet(remoteReadOnly = false) {
+  function observe(promise: Promise<unknown>) {
+    if (!remoteReadOnly) return;
+    // Remote RPC failures are surfaced once by the read-only app's error state.
+    void promise.catch((error: unknown) => {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        typeof error.code === 'string'
+      ) {
+        return;
+      }
+      throw error;
+    });
+  }
   const cellObservers: CellObservers = {};
   const LRUValueCache = new LRUCache<string, CellCacheValue>({ max: 1200 });
   const cellCache: CellCache = {};
@@ -46,6 +63,15 @@ function makeSpreadsheet() {
 
         if (cellObservers[name].length === 0) {
           cellCache[name] = null;
+          if (remoteReadOnly) {
+            const separator = name.indexOf('!');
+            observe(
+              send('remote-ui/release-cell', {
+                sheetName: name.slice(0, separator),
+                name: name.slice(separator + 1),
+              }),
+            );
+          }
         }
       };
     }
@@ -89,7 +115,7 @@ function makeSpreadsheet() {
       binding = typeof binding === 'string' ? { name: binding } : binding;
 
       if (binding.query) {
-        void this.createQuery(sheetName, binding.name, binding.query);
+        observe(this.createQuery(sheetName, binding.name, binding.query));
       }
 
       const resolvedName = `${sheetName}!${binding.name}`;
@@ -106,22 +132,24 @@ function makeSpreadsheet() {
       }
 
       if (cellCache[resolvedName] != null) {
-        void cellCache[resolvedName].then(callback);
+        observe(cellCache[resolvedName].then(callback));
       } else {
         const req = this.get(sheetName, binding.name);
         cellCache[resolvedName] = req;
 
-        void req.then(result => {
-          // We only want to call the callback if it's still waiting on
-          // the same request. If we've received a `cells-changed` event
-          // for this already then it's already been called and we don't
-          // need to call it again (and potentially could be calling it
-          // with an old value depending on the order of messages)
-          if (cellCache[resolvedName] === req) {
-            LRUValueCache.set(resolvedName, result);
-            callback(result);
-          }
-        });
+        observe(
+          req.then(result => {
+            // We only want to call the callback if it's still waiting on
+            // the same request. If we've received a `cells-changed` event
+            // for this already then it's already been called and we don't
+            // need to call it again (and potentially could be calling it
+            // with an old value depending on the order of messages)
+            if (cellCache[resolvedName] === req) {
+              LRUValueCache.set(resolvedName, result);
+              callback(result);
+            }
+          }),
+        );
       }
 
       return cleanup;
@@ -152,7 +180,20 @@ type SpreadsheetProviderProps = {
 };
 
 export function SpreadsheetProvider({ children }: SpreadsheetProviderProps) {
-  const spreadsheet = useMemo(() => makeSpreadsheet(), []);
+  const [budgetId] = useMetadataPref('id');
+  return (
+    <BudgetSpreadsheetProvider key={budgetId}>
+      {children}
+    </BudgetSpreadsheetProvider>
+  );
+}
+
+function BudgetSpreadsheetProvider({ children }: SpreadsheetProviderProps) {
+  const [remoteReadOnly] = useMetadataPref('remoteReadOnly');
+  const spreadsheet = useMemo(
+    () => makeSpreadsheet(remoteReadOnly),
+    [remoteReadOnly],
+  );
 
   useEffect(() => {
     return spreadsheet.listen();

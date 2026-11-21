@@ -26,6 +26,7 @@ import type { ImportableBudgetType } from '#server/importers';
 import { app as mainApp } from '#server/main-app';
 import { mutator } from '#server/mutators';
 import * as prefs from '#server/prefs';
+import { openRemoteBudget, releaseRemoteUiCell } from '#server/remote-ui';
 import { getServer } from '#server/server-config';
 import * as sheet from '#server/sheet';
 import {
@@ -60,6 +61,8 @@ const DEMO_BUDGET_ID = '_demo-budget';
 const TEST_BUDGET_ID = '_test-budget';
 
 export type BudgetFileHandlers = {
+  'open-remote-budget': typeof openRemoteBudget;
+  'remote-ui/release-cell': typeof releaseRemoteUiCell;
   'validate-budget-name': typeof handleValidateBudgetName;
   'unique-budget-name': typeof handleUniqueBudgetName;
   'get-budgets': typeof getBudgets;
@@ -85,6 +88,8 @@ export type BudgetFileHandlers = {
 };
 
 export const app = createApp<BudgetFileHandlers>();
+app.method('open-remote-budget', openRemoteBudget);
+app.method('remote-ui/release-cell', releaseRemoteUiCell);
 app.method('validate-budget-name', handleValidateBudgetName);
 app.method('unique-budget-name', handleUniqueBudgetName);
 app.method('get-budgets', getBudgets);

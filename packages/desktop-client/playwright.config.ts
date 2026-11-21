@@ -10,6 +10,7 @@ export default defineConfig({
   fullyParallel: true,
   workers: Number(process.env.E2E_WORKERS) || (process.env.CI ? 4 : undefined),
   testDir: 'e2e/',
+  testIgnore: 'remote/**',
   reporter: process.env.CI
     ? [['blob'], ['list'], ['junit', { outputFile: 'test-results/junit.xml' }]]
     : [['html', { open: 'never' }]],

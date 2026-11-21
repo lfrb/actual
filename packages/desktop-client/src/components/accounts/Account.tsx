@@ -56,6 +56,7 @@ import { useCategories } from '#hooks/useCategories';
 import { useDateFormat } from '#hooks/useDateFormat';
 import { useFormat } from '#hooks/useFormat';
 import { useLocalPref } from '#hooks/useLocalPref';
+import { useMetadataPref } from '#hooks/useMetadataPref';
 import { usePayees } from '#hooks/usePayees';
 import { getSchedulesQuery } from '#hooks/useSchedules';
 import { SelectedProviderWithItems } from '#hooks/useSelected';
@@ -211,6 +212,7 @@ function getFocusTransactionId(
 }
 
 type AccountInternalProps = {
+  readOnly?: boolean;
   accountId?:
     | AccountEntity['id']
     | 'onbudget'
@@ -1996,7 +1998,10 @@ class AccountInternal extends PureComponent<
                   showGroup={this.props.showGroup}
                   showAccount={this.showAccountColumn()}
                   columnOrder={this.props.columnOrder}
+                  showSelection={!this.props.readOnly}
+                  allowSplitTransaction={!this.props.readOnly}
                   allowReorder={
+                    !this.props.readOnly &&
                     !!accountId &&
                     accountId !== 'offbudget' &&
                     accountId !== 'onbudget' &&
@@ -2009,7 +2014,7 @@ class AccountInternal extends PureComponent<
                   dateFormat={dateFormat}
                   hideFraction={hideFraction}
                   renderEmpty={() =>
-                    showEmptyMessage ? (
+                    showEmptyMessage && !this.props.readOnly ? (
                       <AccountEmptyMessage
                         onAdd={() =>
                           this.props.dispatch(
@@ -2103,6 +2108,7 @@ function AccountHack(props: AccountHackProps) {
 }
 
 export function Account() {
+  const [readOnly] = useMetadataPref('remoteReadOnly');
   const params = useParams();
   const location = useLocation();
 
@@ -2169,11 +2175,12 @@ export function Account() {
 
   return (
     <ErrorBoundary FallbackComponent={FeatureErrorFallback}>
-      <SchedulesProvider query={schedulesQuery}>
+      <SchedulesProvider query={schedulesQuery} disabled={readOnly}>
         <SplitsExpandedProvider
           initialMode={expandSplits ? 'collapse' : 'expand'}
         >
           <AccountHack
+            readOnly={readOnly}
             newTransactions={newTransactions}
             matchedTransactions={matchedTransactions}
             accounts={accounts}

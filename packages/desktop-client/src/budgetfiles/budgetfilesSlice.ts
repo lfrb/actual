@@ -10,6 +10,7 @@ import { t } from 'i18next';
 
 import { resetApp, setAppState } from '#app/appSlice';
 import { closeModal, pushModal } from '#modals/modalsSlice';
+import { addNotification } from '#notifications/notificationsSlice';
 import { loadGlobalPrefs, loadPrefs } from '#prefs/prefsSlice';
 import { createAppAsyncThunk } from '#redux';
 import { signOut } from '#users/usersSlice';
@@ -108,6 +109,33 @@ export const loadBudget = createAppAsyncThunk(
     }
 
     dispatch(setAppState({ loadingText: null }));
+  },
+);
+
+export const openRemoteBudget = createAppAsyncThunk(
+  `${sliceName}/openRemoteBudget`,
+  async ({ id }: { id: string }, { dispatch, extra: { queryClient } }) => {
+    dispatch(setAppState({ loadingText: t('Loading...') }));
+    try {
+      await dispatch(closeBudget()).unwrap();
+      queryClient.clear();
+      await send('open-remote-budget', { id });
+      dispatch(closeModal());
+      await dispatch(loadPrefs()).unwrap();
+    } catch {
+      dispatch(
+        addNotification({
+          notification: {
+            type: 'error',
+            message: t(
+              'Unable to open this server budget. Check your connection and access, then try again.',
+            ),
+          },
+        }),
+      );
+    } finally {
+      dispatch(setAppState({ loadingText: null }));
+    }
   },
 );
 
@@ -617,6 +645,7 @@ function reconcileFiles(
           .map(f => {
             return {
               cloudFileId: f.fileId,
+              operationMode: f.operationMode,
               groupId: f.groupId,
               name: f.name,
               deleted: f.deleted,

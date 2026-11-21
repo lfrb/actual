@@ -79,6 +79,8 @@ export type SyncedPrefs = Partial<
  * core database.
  */
 export type MetadataPrefs = Partial<{
+  /** Ephemeral UI session marker; never written into a local budget. */
+  remoteReadOnly: true;
   budgetName: string;
   id: string;
   lastUploaded: string;

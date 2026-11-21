@@ -36,6 +36,7 @@ export type UsersWithAccess = {
   owner: boolean;
 };
 export type RemoteFile = {
+  operationMode?: 'synced' | 'remote';
   deleted: boolean;
   fileId: string;
   groupId: string;

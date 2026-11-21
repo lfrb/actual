@@ -48,6 +48,7 @@ import {
   downloadBudget,
   loadAllFiles,
   loadBudget,
+  openRemoteBudget,
 } from '#budgetfiles/budgetfilesSlice';
 import { useMultiuserEnabled } from '#components/ServerContext';
 import { useInitialMount } from '#hooks/useInitialMount';
@@ -58,6 +59,9 @@ import { useDispatch, useSelector } from '#redux';
 import { getUserData } from '#users/usersSlice';
 
 function getFileDescription(file: File, t: (key: string) => string) {
+  if (file.state === 'remote' && file.operationMode === 'remote') {
+    return t('Read-only server budget. Data stays on the server.');
+  }
   if (file.state === 'unknown') {
     return t(
       'This is a cloud-based file but its state is unknown because you ' +
@@ -192,8 +196,11 @@ function BudgetFileState({ file, currentUserId }: BudgetFileStateProps) {
       ownerName = t('Unknown');
       break;
     case 'remote':
-      Icon = SvgCloudDownload;
-      status = t('Available for download');
+      Icon = file.operationMode === 'remote' ? SvgCloudCheck : SvgCloudDownload;
+      status =
+        file.operationMode === 'remote'
+          ? t('Read-only server budget')
+          : t('Available for download');
       ownerName = getOwnerDisplayName();
       break;
     case 'local':
@@ -536,6 +543,7 @@ export function BudgetFileSelection({
   showHeader = true,
   quickSwitchMode = false,
 }: BudgetFileSelectionProps) {
+  const { t } = useTranslation();
   const dispatch = useDispatch();
   const allFiles = useSelector(state => state.budgetfiles.allFiles || []);
   const multiuserEnabled = useMultiuserEnabled();
@@ -598,6 +606,14 @@ export function BudgetFileSelection({
 
   const onSelect = async (file: File): Promise<void> => {
     const isRemoteFile = file.state === 'remote';
+    if (file.state === 'remote' && file.operationMode === 'remote') {
+      if (isElectron()) {
+        alert(t('Open this server-owned budget in the web app.'));
+        return;
+      }
+      await dispatch(openRemoteBudget({ id: file.cloudFileId }));
+      return;
+    }
 
     if (!id) {
       if (isRemoteFile) {

@@ -31,6 +31,7 @@ type TransactionRowContextMenuProps = {
     ids: TransactionEntity['id'][],
   ) => void;
   onMakeAsNonSplitTransactions: (ids: string[]) => void;
+  enabled?: boolean;
 };
 
 export function useTransactionRowContextActions({
@@ -44,6 +45,7 @@ export function useTransactionRowContextActions({
   onCreateRule,
   onScheduleAction,
   onMakeAsNonSplitTransactions,
+  enabled = true,
 }: TransactionRowContextMenuProps) {
   const { t } = useTranslation();
   const dispatch = useDispatch();
@@ -74,6 +76,7 @@ export function useTransactionRowContextActions({
 
   const { schedules: selectedSchedules } = useSchedules({
     query: scheduleQuery,
+    enabled,
   });
 
   const types = useMemo(() => {
@@ -233,6 +236,7 @@ export function useTransactionRowContextActions({
 
   useContextMenu({
     triggerRef: rowRef,
+    enabled,
     items: types.trans ? transactionActions : scheduleActions,
   });
 }

@@ -16,6 +16,7 @@ type SearchProps = {
   onChange: (value: string) => void;
   placeholder: string;
   isInModal?: boolean;
+  highContrastPlaceholder?: boolean;
   width?: number | '100%';
   height?: number;
   style?: CSSProperties;
@@ -27,6 +28,7 @@ export function Search({
   onChange,
   placeholder,
   isInModal = false,
+  highContrastPlaceholder = false,
   width = 250,
   height,
   style,
@@ -79,14 +81,18 @@ export function Search({
         className={css({
           width: '100%',
           '::placeholder': {
-            color: theme.formInputTextPlaceholder,
+            color: highContrastPlaceholder
+              ? theme.formInputText
+              : theme.formInputTextPlaceholder,
             transition: 'color .25s',
           },
           '&[data-focused]': isInModal
             ? {}
             : {
                 '::placeholder': {
-                  color: theme.formInputTextPlaceholderSelected,
+                  color: highContrastPlaceholder
+                    ? theme.formInputText
+                    : theme.formInputTextPlaceholderSelected,
                 },
               },
           flex: 1,

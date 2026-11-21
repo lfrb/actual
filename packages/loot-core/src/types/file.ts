@@ -34,6 +34,7 @@ export type SyncedLocalFile = Budget & {
 };
 
 export type RemoteFile = {
+  operationMode?: 'synced' | 'remote';
   cloudFileId: string;
   groupId: string;
   name: string;

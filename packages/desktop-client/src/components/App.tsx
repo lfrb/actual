@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { ErrorBoundary, useErrorBoundary } from 'react-error-boundary';
@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { BrowserRouter } from 'react-router';
 
 import { styles } from '@actual-app/components/styles';
+import { Text } from '@actual-app/components/text';
 import { View } from '@actual-app/components/view';
 import {
   init as initConnection,
@@ -46,8 +47,15 @@ import { Modals } from './Modals';
 import { SidebarProvider } from './sidebar/SidebarProvider';
 import { UpdateNotification } from './UpdateNotification';
 
+const RemoteFinancesApp = lazy(() =>
+  import('./RemoteFinancesApp').then(module => ({
+    default: module.RemoteFinancesApp,
+  })),
+);
+
 function AppInner() {
   const [budgetId] = useMetadataPref('id');
+  const [remoteReadOnly] = useMetadataPref('remoteReadOnly');
   const [cloudFileId] = useMetadataPref('cloudFileId');
   const { t } = useTranslation();
   const { showBoundary: showErrorBoundary } = useErrorBoundary();
@@ -156,7 +164,23 @@ function AppInner() {
     }
   }, [dispatch, t, userData?.tokenExpired]);
 
-  return budgetId ? <FinancesApp /> : <ManagementApp />;
+  return budgetId ? (
+    remoteReadOnly ? (
+      <Suspense
+        fallback={
+          <Text role="status" style={{ padding: 20 }}>
+            {t('Loading...')}
+          </Text>
+        }
+      >
+        <RemoteFinancesApp />
+      </Suspense>
+    ) : (
+      <FinancesApp />
+    )
+  ) : (
+    <ManagementApp />
+  );
 }
 
 function ErrorFallback({ error }: FallbackProps) {

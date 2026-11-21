@@ -47,6 +47,7 @@ import { useDateFormat } from '#hooks/useDateFormat';
 import { useFeatureFlag } from '#hooks/useFeatureFlag';
 import { useLocale } from '#hooks/useLocale';
 import { useLocalPref } from '#hooks/useLocalPref';
+import { useMetadataPref } from '#hooks/useMetadataPref';
 import { useSplitsExpanded } from '#hooks/useSplitsExpanded';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 import { useSyncServerStatus } from '#hooks/useSyncServerStatus';
@@ -128,7 +129,48 @@ type AccountHeaderProps = {
     | 'onReloadSavedFilter'
   >;
 
-export function AccountHeader({
+export function AccountHeader(props: AccountHeaderProps) {
+  const [readOnly] = useMetadataPref('remoteReadOnly');
+  const { t } = useTranslation();
+  if (!readOnly) return <EditableAccountHeader {...props} />;
+  return (
+    <View style={{ ...styles.pageContent, paddingBottom: 10, flexShrink: 0 }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          gap: 20,
+        }}
+      >
+        <View style={{ gap: 10 }}>
+          <AccountNameField
+            account={props.account}
+            accountName={props.accountName}
+            isNameEditable={false}
+            onSaveName={props.onSaveName}
+          />
+          <Balances
+            balanceQuery={props.balanceQuery}
+            showExtraBalances={props.showExtraBalances}
+            onToggleExtraBalances={props.onToggleExtraBalances}
+            account={props.account}
+            isFiltered={props.isFiltered}
+            filteredAmount={props.filteredAmount}
+          />
+        </View>
+        <Search
+          placeholder={t('Search')}
+          highContrastPlaceholder
+          value={props.search}
+          onChange={props.onSearch}
+        />
+      </View>
+    </View>
+  );
+}
+
+function EditableAccountHeader({
   tableRef,
   isNameEditable,
   workingHard,

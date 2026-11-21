@@ -1,8 +1,10 @@
+import { RemoteSessionError } from '#platform/client/remote-session';
 import { captureException } from '#platform/exceptions';
 import { logger } from '#platform/server/log';
 // @ts-strict-ignore
 import { APIError } from '#server/errors';
 import { isMutating, runHandler } from '#server/mutators';
+import { remoteUiHandler } from '#server/remote-ui';
 
 import { postErrorReply } from './errors';
 import type * as T from './index-types';
@@ -52,15 +54,16 @@ export const init: T.Init = function (serverChn, handlers) {
       }
 
       const { id, name, args, undoTag, catchErrors } = msg;
-
-      if (handlers[name]) {
-        runHandler(handlers[name], args, { undoTag, name, requestId: id }).then(
+      const remote = remoteUiHandler(name, handlers[name]);
+      const handler = remote ?? handlers[name];
+      if (handler) {
+        runHandler(handler, args, { undoTag, name, requestId: id }).then(
           result => {
             post({
               type: 'reply',
               id,
               result: catchErrors ? { data: result, error: null } : result,
-              mutated: isMutating(handlers[name]),
+              mutated: !remote && isMutating(handler),
               undoTag,
             });
           },
@@ -72,11 +75,18 @@ export const init: T.Init = function (serverChn, handlers) {
             );
 
             // Only report internal errors
-            if (error.type === 'ServerError') {
+            if (
+              error.type === 'ServerError' &&
+              !(nativeError instanceof RemoteSessionError)
+            ) {
               captureException(nativeError);
             }
 
-            if (!catchErrors) {
+            if (
+              !catchErrors &&
+              !remote &&
+              !(nativeError instanceof RemoteSessionError)
+            ) {
               // Notify the frontend that something bad happend
               send('server-error');
             }
