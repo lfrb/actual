@@ -138,6 +138,11 @@ export type ApiHandlers = {
     endDate?: string;
   }) => Promise<TransactionEntity[]>;
 
+  'api/transaction-note-update': (arg: {
+    id: TransactionEntity['id'];
+    fields: { notes: string };
+  }) => Promise<boolean>;
+
   'api/transaction-update': (arg: {
     id: TransactionEntity['id'];
     fields: Partial<TransactionEntity>;

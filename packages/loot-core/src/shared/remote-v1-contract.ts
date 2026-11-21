@@ -66,6 +66,11 @@ export const REMOTE_OPERATION_REGISTRY = {
     payload: ['sheetName', 'name'],
   },
   'ui.note': { handler: 'notes-get', write: false, payload: ['id'] },
+  'ui.transaction-note.update': {
+    handler: 'api/transaction-note-update',
+    write: true,
+    payload: ['id', 'fields'],
+  },
   'ui.query': { handler: 'query', write: false, payload: ['query'] },
   'accounts.list': { handler: 'api/accounts-get', write: false, payload: [] },
   'account.balance': {
@@ -621,6 +626,16 @@ function validatePayload(
         last_reconciled: 'string-null',
         account_group_id: 'id-null',
       })
+    );
+  }
+  if (operation === 'ui.transaction-note.update') {
+    const fields = payload.fields;
+    return (
+      validId(payload.id) &&
+      isRecord(fields) &&
+      Object.keys(fields).length === 1 &&
+      typeof fields.notes === 'string' &&
+      validTransaction(fields, true)
     );
   }
   if (operation === 'transactions.update') {

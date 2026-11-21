@@ -725,6 +725,21 @@ handlers['api/transactions-get'] = async function ({
   return data;
 };
 
+handlers['api/transaction-note-update'] = withMutation(async function ({
+  id,
+  fields: { notes },
+}) {
+  checkFileOpen();
+  const existing = await db.first<{ id: string }>(
+    'SELECT id FROM transactions WHERE id = ? AND tombstone = 0',
+    [id],
+  );
+  if (!existing) return false;
+  // Editing a note must not run transfer or split recalculation.
+  await db.updateTransaction({ id, notes });
+  return true;
+});
+
 handlers['api/transaction-update'] = withMutation(async function ({
   id,
   fields,

@@ -22,6 +22,7 @@ export type RemoteWorkerSession = {
   userId: string;
   credentialId: string;
   readOnly: boolean;
+  writeScope?: 'transaction-notes';
   lastUsedAt: number;
 };
 
@@ -102,6 +103,7 @@ export class RemoteWorkerManager {
     userId: string,
     credentialId: string,
     readOnly = false,
+    writeScope?: RemoteWorkerSession['writeScope'],
   ): Promise<RemoteWorkerSession> {
     if (this.closing) throw new Error('remote-worker-manager-closed');
     assertOpaqueId(fileId);
@@ -117,6 +119,7 @@ export class RemoteWorkerManager {
       userId,
       credentialId,
       readOnly,
+      writeScope,
       lastUsedAt: Date.now(),
     };
     worker.sessions.set(session.id, session);
@@ -275,6 +278,13 @@ export class RemoteWorkerManager {
       if (!session) throw new Error('remote-operation-not-dispatched');
       if (isWrite && session.readOnly) {
         throw new Error('remote-read-only-session');
+      }
+      if (
+        isWrite &&
+        session.writeScope === 'transaction-notes' &&
+        operation !== 'ui.transaction-note.update'
+      ) {
+        throw new Error('remote-write-outside-scope');
       }
       const message =
         operation === '__journal_status'

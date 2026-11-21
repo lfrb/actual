@@ -32,10 +32,17 @@ app.post('/session/open', async (req, res) => {
   if (
     !req.body ||
     Object.keys(req.body).some(
-      key => !['budgetId', 'protocolVersion', 'readOnly'].includes(key),
+      key =>
+        !['budgetId', 'protocolVersion', 'readOnly', 'writeScope'].includes(
+          key,
+        ),
     ) ||
     req.body.protocolVersion !== 1 ||
-    (req.body.readOnly !== undefined && typeof req.body.readOnly !== 'boolean')
+    (req.body.readOnly !== undefined &&
+      typeof req.body.readOnly !== 'boolean') ||
+    (req.body.writeScope !== undefined &&
+      (req.body.writeScope !== 'transaction-notes' ||
+        req.body.readOnly === true))
   ) {
     res.status(400).json({ status: 'error', reason: 'invalid-request' });
     return;
@@ -61,6 +68,7 @@ app.post('/session/open', async (req, res) => {
       auth.userId,
       auth.credentialId,
       req.body.readOnly === true,
+      req.body.writeScope,
     );
     const currentAuth = authenticate(req, res);
     if (
@@ -80,6 +88,7 @@ app.post('/session/open', async (req, res) => {
       sessionId: session.id,
       budgetId,
       readOnly: session.readOnly,
+      writeScope: session.writeScope,
     });
   } catch (error) {
     sendManagerError(res, error);
@@ -286,6 +295,7 @@ app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
       'remote-operation-not-dispatched': 'operation-not-dispatched',
       'remote-session-invalid': 'unauthorized',
       'remote-read-only-session': 'read-only-session',
+      'remote-write-outside-scope': 'write-outside-scope',
       'remote-request-too-large': 'request-too-large',
       'remote-queue-full': 'queue-full',
       'remote-result-too-large': 'result-too-large',
@@ -293,7 +303,7 @@ app.post('/:budgetId/:sessionId/rpc', async (req, res) => {
     };
     const code = remoteErrorCodes[message] ?? 'operation-failed';
     const status =
-      code === 'read-only-session'
+      code === 'read-only-session' || code === 'write-outside-scope'
         ? 403
         : code === 'unauthorized'
           ? 401

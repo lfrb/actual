@@ -328,6 +328,31 @@ describe('remote session authorization', () => {
         item => item.operationId === 'import-match-1',
       ),
     ).toHaveLength(0);
+    const noteSession = await request(server)
+      .post('/remote/session/open')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        protocolVersion: 1,
+        budgetId: budget.id,
+        writeScope: 'transaction-notes',
+      })
+      .expect(201);
+    expect(noteSession.body).toMatchObject({
+      readOnly: false,
+      writeScope: 'transaction-notes',
+    });
+    const noteSessionId = noteSession.body.sessionId as string;
+    openedSessions.push({ budgetId: budget.id, sessionId: noteSessionId });
+    const noteRpc = (operation: string, payload: object) =>
+      request(server)
+        .post(`/remote/${budget.id}/${noteSessionId}/rpc`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          protocolVersion: 1,
+          requestId: randomUUID(),
+          operation,
+          payload,
+        });
     const transactions = await request(server)
       .post(rpcUrl)
       .set('Authorization', `Bearer ${token}`)
@@ -338,6 +363,34 @@ describe('remote session authorization', () => {
         payload: { accountId, startDate: '2026-01-01', endDate: '2026-01-31' },
       })
       .expect(200);
+    const transactionId = transactions.body.result[0].id as string;
+    const refusedUpdate = await noteRpc('transactions.update', {
+      id: transactionId,
+      fields: { amount: -1 },
+    }).expect(403);
+    expect(refusedUpdate.body.error.code).toBe('write-outside-scope');
+    await noteRpc('ui.transaction-note.update', {
+      id: transactionId,
+      fields: { notes: 'A browser note', amount: -1 },
+    }).expect(400);
+    await noteRpc('ui.transaction-note.update', {
+      id: transactionId,
+      fields: { notes: 'A browser note' },
+    }).expect(200);
+    const updated = await noteRpc('transactions.list', {
+      accountId,
+      startDate: '2026-01-01',
+      endDate: '2026-01-31',
+    }).expect(200);
+    expect(updated.body.result).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: transactionId,
+          notes: 'A browser note',
+          amount: -1250,
+        }),
+      ]),
+    );
     expect(transactions.body.result).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ date: '2026-01-12', amount: -1250 }),
