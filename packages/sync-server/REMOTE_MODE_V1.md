@@ -7,9 +7,9 @@ SDK remote activation is not implemented here.
 
 The web app can open existing remote budgets read-only using its normal server
 login. It reuses the account registers and transaction table, with explicit
-Refresh and Close actions. Choose **Enable note editing** to edit an existing
-transaction note in a restricted session, or **Switch to read-only** to disable
-it. Reopening a budget from the picker starts in read-only mode. Other edits,
+Refresh and Close actions. Choose **Enable limited editing** to edit existing
+transaction notes or clear and unclear transactions. **Switch to read-only**
+removes those controls. Reconciled transactions stay locked. Reopening a budget from the picker starts in read-only mode. Other edits,
 reports, the budget worksheet, schedules,
 mobile/Electron remote UI, and live cross-client updates are deferred. Browser
 query results and view preferences are transient; no local budget database or
@@ -40,11 +40,17 @@ yarn workspace @actual-app/web exec playwright test -c playwright.remote.config.
 The web UI opens sessions with optional `readOnly: true`; the server echoes the
 flag and rejects every write operation for that session with
 `read-only-session` (403). Omitting the flag preserves writable RPC sessions.
-For note editing, open with `writeScope: "transaction-notes"`. This session
-permits reads and `ui.transaction-note.update` with only the transaction ID and
-the new note. The server rejects any other write with `write-outside-scope` (403).
-The browser refetches transactions after confirmation. If the result is unknown,
-it asks the user to refresh before retrying.
+The browser opens limited editing sessions with `writeScope: "transaction-details"`.
+These sessions permit `ui.transaction-note.update` and
+`ui.transaction-cleared.update`. The older `transaction-notes` scope still
+permits only note writes. The server rejects writes outside the selected scope
+with `write-outside-scope` (403).
+
+Clearing takes a transaction ID and a boolean. A split parent and its children
+change in one batch. A reconciled transaction or a split child targeted directly
+returns a refusal and leaves all rows unchanged. Each side of a transfer keeps
+its own clearing status. The browser refreshes visible data after confirmation.
+If the result is unknown, it asks the user to refresh before retrying.
 
 The `ui.*` registry contains native account/category/payee/tag reads, bounded AQL,
 notes, and spreadsheet cells. It does not accept arbitrary engine handler names.

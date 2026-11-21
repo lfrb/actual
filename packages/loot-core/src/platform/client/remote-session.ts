@@ -16,7 +16,7 @@ type SessionOptions = {
   token: string;
   budgetId: string;
   fetch?: typeof fetch;
-  editNotes?: boolean;
+  editTransactions?: boolean;
 };
 
 /** Network-only UI session. Never loads or stores a budget locally. */
@@ -46,18 +46,20 @@ export class RemoteUiSession {
 
   static async open(options: SessionOptions): Promise<RemoteUiSession> {
     const session = new RemoteUiSession(options);
+    const writeScope = options.editTransactions
+      ? 'transaction-details'
+      : undefined;
     const reply = await session.post('/session/open', {
       protocolVersion: 1,
       budgetId: options.budgetId,
-      readOnly: !options.editNotes,
-      writeScope: options.editNotes ? 'transaction-notes' : undefined,
+      readOnly: !options.editTransactions,
+      writeScope,
     });
     if (
       reply.protocolVersion !== 1 ||
       reply.budgetId !== options.budgetId ||
-      reply.readOnly !== !options.editNotes ||
-      reply.writeScope !==
-        (options.editNotes ? 'transaction-notes' : undefined) ||
+      reply.readOnly !== !options.editTransactions ||
+      reply.writeScope !== writeScope ||
       typeof reply.sessionId !== 'string' ||
       reply.sessionId.length === 0
     ) {
@@ -78,13 +80,20 @@ export class RemoteUiSession {
   }
 
   writeNote(id: string, notes: string): Promise<unknown> {
-    if (!this.options.editNotes) {
+    if (!this.options.editTransactions) {
       return Promise.reject(new RemoteSessionError('read-only-session'));
     }
     return this.enqueue('ui.transaction-note.update', {
       id,
       fields: { notes },
     });
+  }
+
+  writeCleared(id: string, cleared: boolean): Promise<unknown> {
+    if (!this.options.editTransactions) {
+      return Promise.reject(new RemoteSessionError('read-only-session'));
+    }
+    return this.enqueue('ui.transaction-cleared.update', { id, cleared });
   }
 
   private enqueue(

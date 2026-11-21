@@ -27,12 +27,19 @@ export async function updateRemoteTransactionNote(_args: {
   throw new RemoteSessionError('remote-ui-operation-unavailable');
 }
 
+export async function updateRemoteTransactionCleared(_args: {
+  id: string;
+  cleared: boolean;
+}): Promise<'updated' | 'not-found' | 'reconciled' | 'split-child'> {
+  throw new RemoteSessionError('remote-ui-operation-unavailable');
+}
+
 export async function openRemoteBudget({
   id,
-  editNotes = false,
+  editTransactions = false,
 }: {
   id: string;
-  editNotes?: boolean;
+  editTransactions?: boolean;
 }) {
   if (process.env.ACTUAL_HOSTED_RUNTIME === '1') {
     throw new Error('hosted-runtime-network-forbidden');
@@ -56,7 +63,7 @@ export async function openRemoteBudget({
       serverURL: server.BASE_SERVER,
       token,
       budgetId: id,
-      editNotes,
+      editTransactions,
     });
     bridge = new RemoteUiBridge(
       session,
@@ -64,10 +71,9 @@ export async function openRemoteBudget({
         id,
         budgetName: file.name,
         remoteReadOnly: true,
-        ...(editNotes ? { remoteTransactionNotes: true } : {}),
+        ...(editTransactions ? { remoteTransactionEdits: true } : {}),
       },
       push,
-      editNotes ? (id, notes) => session.writeNote(id, notes) : undefined,
     );
     return {};
   } finally {
@@ -110,7 +116,10 @@ export function remoteUiHandler(
     current.send(name, args).catch(error => {
       if (
         bridge === current &&
-        (name !== 'remote-ui/update-transaction-note' ||
+        (![
+          'remote-ui/update-transaction-note',
+          'remote-ui/update-transaction-cleared',
+        ].includes(name) ||
           (error instanceof RemoteSessionError &&
             ['access-lost', 'budget-not-found'].includes(error.code))) &&
         !(

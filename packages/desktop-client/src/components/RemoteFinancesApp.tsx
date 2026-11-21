@@ -83,7 +83,7 @@ export function RemoteFinancesApp() {
   const { isNarrowWidth } = useResponsive();
   const [budgetName] = useMetadataPref('budgetName');
   const [budgetId] = useMetadataPref('id');
-  const [editNotes] = useMetadataPref('remoteTransactionNotes');
+  const [editTransactions] = useMetadataPref('remoteTransactionEdits');
   const accounts = useAccounts();
   const payees = usePayees();
   const categories = useCategories();
@@ -167,7 +167,9 @@ export function RemoteFinancesApp() {
         >
           <SvgLockClosed width={13} height={13} aria-hidden="true" />
           <Text style={styles.smallText}>
-            {editNotes ? t('Notes editable') : t('Read-only')}
+            {editTransactions
+              ? t('Notes and clearing editable')
+              : t('Read-only')}
           </Text>
           <View style={{ flex: 1 }} />
           {!isNarrowWidth && !accessLost && budgetId && (
@@ -175,11 +177,16 @@ export function RemoteFinancesApp() {
               isDisabled={refreshing}
               onPress={() =>
                 void dispatch(
-                  openRemoteBudget({ id: budgetId, editNotes: !editNotes }),
+                  openRemoteBudget({
+                    id: budgetId,
+                    editTransactions: !editTransactions,
+                  }),
                 )
               }
             >
-              {editNotes ? t('Switch to read-only') : t('Enable note editing')}
+              {editTransactions
+                ? t('Switch to read-only')
+                : t('Enable limited editing')}
             </Button>
           )}
           <Button

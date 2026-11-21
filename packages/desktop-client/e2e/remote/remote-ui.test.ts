@@ -14,7 +14,7 @@ async function openDemo(page: Page) {
   ).toBeVisible();
 }
 
-test('reads existing screens without downloads or writes, refreshes external changes, and edits a note on demand', async ({
+test('reads existing screens without downloads or writes, refreshes external changes, and switches to limited editing', async ({
   page,
   request,
 }) => {
@@ -31,7 +31,8 @@ test('reads existing screens without downloads or writes, refreshes external cha
       if (
         operation &&
         (!operation.startsWith('ui.') ||
-          operation === 'ui.transaction-note.update') &&
+          operation === 'ui.transaction-note.update' ||
+          operation === 'ui.transaction-cleared.update') &&
         operation !== 'preferences.get'
       ) {
         mutations.push(operation);
@@ -123,8 +124,10 @@ test('reads existing screens without downloads or writes, refreshes external cha
   expect(downloads).toEqual([]);
   expect(mutations).toEqual([]);
   expect(errors).toEqual([]);
-  await page.getByRole('button', { name: 'Enable note editing' }).click();
-  await expect(page.getByText('Notes editable', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Enable limited editing' }).click();
+  await expect(
+    page.getByText('Notes and clearing editable', { exact: true }),
+  ).toBeVisible();
   await page
     .getByRole('button', { name: /Edit transaction note: Weekly groceries/ })
     .click();
@@ -139,9 +142,32 @@ test('reads existing screens without downloads or writes, refreshes external cha
       name: 'Edit transaction note: Paid for weekly groceries',
     }),
   ).toBeVisible();
-  expect(mutations).toEqual(['ui.transaction-note.update']);
+  const groceryRow = page
+    .getByTestId('row')
+    .filter({ hasText: 'Fruiterie Vert Pomme' });
+  const markUncleared = groceryRow.getByRole('button', {
+    name: 'Mark transaction as uncleared',
+  });
+  const markCleared = groceryRow.getByRole('button', {
+    name: 'Mark transaction as cleared',
+  });
+  await page.getByTestId('account-balance').click();
+  const clearedTotal = page.getByText(/^Cleared total:/);
+  await expect(clearedTotal).toContainText('7,400.00');
+  await markUncleared.click();
+  await expect(markCleared).toBeVisible();
+  await expect(clearedTotal).toContainText('7,442.50');
+  await markCleared.click();
+  await expect(markUncleared).toBeVisible();
+  await expect(clearedTotal).toContainText('7,400.00');
+  expect(mutations).toEqual([
+    'ui.transaction-note.update',
+    'ui.transaction-cleared.update',
+    'ui.transaction-cleared.update',
+  ]);
   await page.getByRole('button', { name: 'Switch to read-only' }).click();
   await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
+  await expect(markUncleared).toHaveCount(0);
   await expect(
     page.getByText('Paid for weekly groceries', { exact: true }),
   ).toBeVisible();

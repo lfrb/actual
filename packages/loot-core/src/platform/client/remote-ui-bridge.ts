@@ -30,10 +30,10 @@ export class RemoteUiBridge {
   private closed = false;
 
   constructor(
-    private readonly session: Pick<RemoteUiSession, 'read' | 'close'>,
+    private readonly session: Pick<RemoteUiSession, 'read' | 'close'> &
+      Partial<Pick<RemoteUiSession, 'writeNote' | 'writeCleared'>>,
     readonly metadata: MetadataPrefs,
     private readonly push: typeof Push,
-    private readonly writeNote?: RemoteUiSession['writeNote'],
   ) {}
 
   async send(name: string, input?: unknown): Promise<unknown> {
@@ -42,16 +42,53 @@ export class RemoteUiBridge {
     if (Object.hasOwn(reads, name)) return this.session.read(reads[name], args);
     if (name === 'query') return this.query(args);
     if (name === 'remote-ui/update-transaction-note') {
-      if (!this.writeNote) throw new RemoteSessionError('read-only-session');
+      if (!this.session.writeNote) {
+        throw new RemoteSessionError('read-only-session');
+      }
       if (typeof args.id !== 'string' || typeof args.notes !== 'string') {
         throw new RemoteSessionError('invalid-request');
       }
-      const updated = await this.writeNote(args.id, args.notes);
+      const updated = await this.session.writeNote(args.id, args.notes);
       if (updated !== true) {
         throw new RemoteSessionError('transaction-not-found');
       }
       this.push('sync-event', { type: 'success', tables: ['transactions'] });
       return;
+    }
+    if (name === 'remote-ui/update-transaction-cleared') {
+      if (!this.session.writeCleared) {
+        throw new RemoteSessionError('read-only-session');
+      }
+      if (typeof args.id !== 'string' || typeof args.cleared !== 'boolean') {
+        throw new RemoteSessionError('invalid-request');
+      }
+      const result = await this.session.writeCleared(args.id, args.cleared);
+      if (result === 'updated') {
+        this.push('sync-event', { type: 'success', tables: ['transactions'] });
+        // Balance cells are independent of the transaction list subscription.
+        // A failed refresh cannot turn a confirmed write into an unknown save.
+        try {
+          await this.refreshCells();
+        } catch (error) {
+          if (!this.closed) {
+            this.push('remote-ui-error', {
+              code:
+                error instanceof RemoteSessionError
+                  ? error.code
+                  : 'request-failed',
+            });
+          }
+        }
+      }
+      if (
+        result !== 'updated' &&
+        result !== 'not-found' &&
+        result !== 'reconciled' &&
+        result !== 'split-child'
+      ) {
+        throw new RemoteSessionError('invalid-rpc-response');
+      }
+      return result;
     }
     if (name === 'remote-ui/release-cell') {
       if (typeof args.sheetName !== 'string' || typeof args.name !== 'string') {
@@ -115,9 +152,7 @@ export class RemoteUiBridge {
       return this.cell(args.sheetName, args.name);
     }
     if (name === 'sync') {
-      for (const cell of this.cells.values()) {
-        this.publishCell(await this.cell(cell.sheetName, cell.name));
-      }
+      await this.refreshCells();
       this.push('sync-event', {
         // Registers optimistically handle local writes and listen only for
         // completed syncs. An explicit remote refresh must reach those too.
@@ -143,6 +178,12 @@ export class RemoteUiBridge {
     this.queries.clear();
     this.cells.clear();
     await this.session.close();
+  }
+
+  private async refreshCells() {
+    for (const cell of this.cells.values()) {
+      this.publishCell(await this.cell(cell.sheetName, cell.name));
+    }
   }
 
   private cell(

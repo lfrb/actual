@@ -109,6 +109,7 @@ import type {
   TableNavigator,
   TableProps,
 } from '#components/table';
+import { RemoteTransactionCleared } from '#components/transactions/RemoteTransactionCleared';
 import { RemoteTransactionNote } from '#components/transactions/RemoteTransactionNote';
 import {
   SchedulesProvider,
@@ -1134,7 +1135,7 @@ const Transaction = memo(function Transaction({
 }: TransactionProps) {
   const { t } = useTranslation();
   const [readOnly] = useMetadataPref('remoteReadOnly');
-  const [canEditRemoteNotes] = useMetadataPref('remoteTransactionNotes');
+  const [canEditRemoteTransactions] = useMetadataPref('remoteTransactionEdits');
   const focusedField = readOnly ? null : focusedFieldProp;
   const onEdit: TransactionProps['onEdit'] = (id, field) => {
     if (!readOnly) onEditProp(id, field);
@@ -1799,7 +1800,7 @@ const Transaction = memo(function Transaction({
           />
         );
       case 'notes':
-        return canEditRemoteNotes && !isPreview && !isTemporaryId(id) ? (
+        return canEditRemoteTransactions && !isPreview && !isTemporaryId(id) ? (
           <Cell key={columnId} name="notes" width="flex" plain>
             <RemoteTransactionNote key={id} id={id} notes={notes ?? ''} />
           </Cell>
@@ -2129,7 +2130,22 @@ const Transaction = memo(function Transaction({
           />
         );
       case 'cleared':
-        return (
+        return canEditRemoteTransactions &&
+          !isPreview &&
+          !isChild &&
+          !reconciled &&
+          !isTemporaryId(id) ? (
+          <Cell
+            key={columnId}
+            name="cleared"
+            width={38}
+            alignItems="center"
+            style={{ padding: 1 }}
+            plain
+          >
+            <RemoteTransactionCleared id={id} cleared={Boolean(cleared)} />
+          </Cell>
+        ) : (
           <StatusCell
             key={columnId}
             /* Icon field for all transactions */
