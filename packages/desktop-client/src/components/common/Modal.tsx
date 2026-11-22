@@ -114,6 +114,7 @@ type ModalProps = ComponentPropsWithRef<typeof ReactAriaModal> & {
   ariaLabelledBy?: string;
   name: string;
   isLoading?: boolean;
+  loadingLabel?: string;
   noAnimation?: boolean;
   style?: CSSProperties;
   onClose?: () => void;
@@ -128,6 +129,7 @@ type ModalProps = ComponentPropsWithRef<typeof ReactAriaModal> & {
 export const Modal = ({
   name,
   isLoading = false,
+  loadingLabel,
   noAnimation = false,
   style,
   children,
@@ -206,7 +208,8 @@ export const Modal = ({
       <ReactAriaModalOverlay
         data-testid={`${name}-modal`}
         className={isAnimatedSheet ? mobileSheetOverlayClassName : undefined}
-        isDismissable
+        isDismissable={!loadingLabel}
+        isKeyboardDismissDisabled={Boolean(loadingLabel)}
         isOpen={isOpen}
         onOpenChange={nextIsOpen => {
           setIsOpen(nextIsOpen);
@@ -293,7 +296,15 @@ export const Modal = ({
                   }}
                 >
                   {isSheet && <View style={mobileSheetHandleStyle} />}
-                  <View style={{ paddingTop: 0, flex: 1, flexShrink: 0 }}>
+                  <View
+                    inert={Boolean(loadingLabel)}
+                    style={{
+                      paddingTop: 0,
+                      flex: 1,
+                      flexShrink: 0,
+                      opacity: loadingLabel ? 0.45 : 1,
+                    }}
+                  >
                     <ErrorBoundary FallbackComponent={FeatureErrorFallback}>
                       {typeof children === 'function'
                         ? children(modalProps)
@@ -302,22 +313,27 @@ export const Modal = ({
                   </View>
                   {isLoading && (
                     <View
+                      role={loadingLabel ? 'status' : undefined}
                       style={{
                         position: 'absolute',
                         top: 0,
                         left: 0,
                         right: 0,
                         bottom: 0,
-                        backgroundColor: theme.pageBackground,
+                        backgroundColor: loadingLabel
+                          ? undefined
+                          : theme.pageBackground,
                         alignItems: 'center',
                         justifyContent: 'center',
                         zIndex: 1000,
+                        gap: 8,
                       }}
                     >
                       <AnimatedLoading
                         style={{ width: 20, height: 20 }}
                         color={theme.pageText}
                       />
+                      {loadingLabel && <Text>{loadingLabel}</Text>}
                     </View>
                   )}
                 </ModalContentContainer>

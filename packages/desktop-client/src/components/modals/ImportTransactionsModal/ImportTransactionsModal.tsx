@@ -14,7 +14,7 @@ import {
 } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
-import { Button, ButtonWithLoading } from '@actual-app/components/button';
+import { Button } from '@actual-app/components/button';
 import { Input } from '@actual-app/components/input';
 import { Select } from '@actual-app/components/select';
 import { SpaceBetween } from '@actual-app/components/space-between';
@@ -643,6 +643,7 @@ export function ImportTransactionsModal({
   const importTransactions = useImportTransactionsMutation();
 
   async function onImport(close) {
+    if (loadingState !== null || importTransactions.isPending) return;
     setLoadingState('importing');
 
     const finalTransactions = [];
@@ -795,6 +796,7 @@ export function ImportTransactionsModal({
         reimportDeleted,
       },
       {
+        onError: () => setLoadingState(null),
         onSuccess: async didChange => {
           if (didChange) {
             void queryClient.invalidateQueries(payeeQueries.list());
@@ -897,7 +899,7 @@ export function ImportTransactionsModal({
   });
 
   useEffect(() => {
-    if (parsedTransactions.length === 0 || loadingState === 'parsing') {
+    if (parsedTransactions.length === 0 || loadingState !== null) {
       return;
     }
 
@@ -950,7 +952,10 @@ export function ImportTransactionsModal({
   return (
     <Modal
       name="import-transactions"
-      isLoading={loadingState === 'parsing'}
+      isLoading={loadingState !== null}
+      loadingLabel={
+        loadingState === 'importing' ? t('Importing transactions…') : undefined
+      }
       containerProps={{ style: { width: 800 } }}
     >
       {({ state }) => (
@@ -1382,17 +1387,16 @@ export function ImportTransactionsModal({
                 ).length;
 
                 return (
-                  <ButtonWithLoading
+                  <Button
                     variant="primary"
                     autoFocus
-                    isDisabled={count === 0}
-                    isLoading={loadingState === 'importing'}
+                    isDisabled={count === 0 || loadingState !== null}
                     onPress={() => {
                       void onImport(() => state.close());
                     }}
                   >
                     <Trans count={count}>Import {{ count }} transactions</Trans>
-                  </ButtonWithLoading>
+                  </Button>
                 );
               })()}
             </View>
