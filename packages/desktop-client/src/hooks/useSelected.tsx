@@ -52,6 +52,7 @@ export function useSelected<T extends Item>(
   items: T[],
   initialSelectedIds: string[],
   selectAllFilter?: (item: T) => boolean,
+  preserveUnloadedSelection = false,
 ) {
   const [state, dispatch] = useReducer(
     (state: SelectedState, action: Actions) => {
@@ -129,10 +130,15 @@ export function useSelected<T extends Item>(
         case 'select-all':
           let selectedItems: string[] = [];
           if (action.ids && items && selectAllFilter) {
-            const idsToInclude = new Set(
-              items.filter(selectAllFilter).map(item => item.id),
+            const excludedIds = new Set(
+              items.filter(item => !selectAllFilter(item)).map(item => item.id),
             );
-            selectedItems = action.ids.filter(id => idsToInclude.has(id));
+            const loadedIds = new Set(items.map(item => item.id));
+            selectedItems = action.ids.filter(
+              id =>
+                !excludedIds.has(id) &&
+                (preserveUnloadedSelection || loadedIds.has(id)),
+            );
           } else if (items && selectAllFilter) {
             selectedItems = items.filter(selectAllFilter).map(item => item.id);
           } else {
@@ -186,7 +192,14 @@ export function useSelected<T extends Item>(
 
       if (!isSame) {
         const selected = [...state.selectedItems];
-        const filtered = selected.filter(id => ids.has(id));
+        const previouslyLoaded = preserveUnloadedSelection
+          ? new Set(prevItems.current.map(item => item.id))
+          : null;
+        const filtered = selected.filter(
+          id =>
+            ids.has(id) ||
+            (previouslyLoaded !== null && !previouslyLoaded.has(id)),
+        );
 
         // If the selected items has changed, update the selection
         if (selected.length !== filtered.length) {
@@ -196,7 +209,7 @@ export function useSelected<T extends Item>(
     }
 
     prevItems.current = items;
-  }, [items, state.selectedItems]);
+  }, [items, preserveUnloadedSelection, state.selectedItems]);
 
   useEffect(() => {
     const prevState = undo.getUndoState('selectedItems');
@@ -305,6 +318,7 @@ type SelectedProviderWithItemsProps<T extends Item> = {
   name: string;
   items: T[];
   initialSelectedIds?: string[];
+  preserveUnloadedSelection?: boolean;
   fetchAllIds: () => Promise<string[]>;
   registerDispatch?: (dispatch: Dispatch<Actions>) => void;
   selectAllFilter?: (item: T) => boolean;
@@ -320,6 +334,7 @@ export function SelectedProviderWithItems<T extends Item>({
   fetchAllIds,
   registerDispatch,
   selectAllFilter,
+  preserveUnloadedSelection,
   children,
 }: SelectedProviderWithItemsProps<T>) {
   const selected = useSelected<T>(
@@ -327,6 +342,7 @@ export function SelectedProviderWithItems<T extends Item>({
     items,
     initialSelectedIds,
     selectAllFilter,
+    preserveUnloadedSelection,
   );
 
   useEffect(() => {

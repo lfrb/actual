@@ -47,6 +47,28 @@ describe('useSelected', () => {
     expect(result.current.items).toEqual(new Set(['one', 'three', 'five']));
   });
 
+  it('keeps unloaded select-all IDs when another page loads', () => {
+    const { result, rerender } = renderHook(
+      ({ items }: { items: TestItem[] }) =>
+        useSelected('test', items, [], item => item.id !== 'excluded', true),
+      { initialProps: { items: [{ id: 'one' }, { id: 'excluded' }] } },
+    );
+
+    act(() =>
+      result.current.dispatch({
+        type: 'select-all',
+        ids: ['one', 'excluded', 'two', 'three'],
+      }),
+    );
+    expect(result.current.items).toEqual(new Set(['one', 'two', 'three']));
+
+    rerender({ items: [{ id: 'one' }, { id: 'two' }, { id: 'new' }] });
+    expect(result.current.items).toEqual(new Set(['one', 'two', 'three']));
+
+    rerender({ items: [{ id: 'two' }, { id: 'new' }] });
+    expect(result.current.items).toEqual(new Set(['two', 'three']));
+  });
+
   it('removes selected ids that are no longer in items', () => {
     // Simulates hiding transactions (e.g. toggling “hide reconciled
     // transactions”) while they are selected: the selection must be

@@ -450,18 +450,26 @@ class AccountInternal extends PureComponent<
   }
 
   fetchAllIds = async () => {
-    if (!this.paged) {
+    const paged = this.paged;
+    if (!paged) return [];
+
+    const { showReconciled, search } = this.state;
+    const { accountId } = this.props;
+    const { data } = await aqlQuery(paged.query.select(['id', 'reconciled']));
+    if (
+      paged !== this.paged ||
+      accountId !== this.props.accountId ||
+      search !== this.state.search ||
+      showReconciled !== this.state.showReconciled
+    ) {
       return [];
     }
 
-    const { data } = await aqlQuery(this.paged.query.select('id'));
-    // Remember, this is the `grouped` split type so we need to deal
-    // with the `subtransactions` property
-    return data.reduce((arr: string[], t: TransactionEntity) => {
-      arr.push(t.id);
-      t.subtransactions?.forEach(sub => arr.push(sub.id));
-      return arr;
-    }, []);
+    return (data as TransactionEntity[]).flatMap(row =>
+      [row, ...(row.subtransactions ?? [])]
+        .filter(transaction => showReconciled || !transaction.reconciled)
+        .map(transaction => transaction.id),
+    );
   };
 
   refetchTransactions = async () => {
@@ -499,7 +507,14 @@ class AccountInternal extends PureComponent<
       query = query.filter({ reconciled: { $eq: false } });
     }
 
-    const paged = pagedQuery<TransactionEntity>(query.select('*'), {
+    const registerQuery = query.select('*');
+    if (
+      this.paged &&
+      this.paged.query.serializeAsString() !== registerQuery.serializeAsString()
+    ) {
+      this.dispatchSelected?.({ type: 'select-none' });
+    }
+    const paged = pagedQuery<TransactionEntity>(registerQuery, {
       onData: async (groupedData, prevData) => {
         const data = ungroupTransactions([...groupedData]);
         const firstLoad = prevData == null;
@@ -580,6 +595,7 @@ class AccountInternal extends PureComponent<
   // oxlint-disable-next-line react/no-unsafe
   UNSAFE_componentWillReceiveProps(nextProps: AccountInternalProps) {
     if (this.props.accountId !== nextProps.accountId) {
+      this.dispatchSelected?.({ type: 'select-none' });
       this.pendingFocusId = getFocusTransactionId(nextProps.location);
       this.setState(
         {
@@ -637,6 +653,7 @@ class AccountInternal extends PureComponent<
   };
 
   onSearch = (value: string) => {
+    this.dispatchSelected?.({ type: 'select-none' });
     this.paged?.unsubscribe();
     this.setState({ search: value }, this.onSearchDone);
   };
@@ -966,6 +983,7 @@ class AccountInternal extends PureComponent<
       }
       case 'toggle-reconciled': {
         const showReconciled = !this.state.showReconciled;
+        this.dispatchSelected?.({ type: 'select-none' });
         this.props.setShowReconciled(showReconciled);
         this.setState({ showReconciled }, this.applySearch);
         break;
@@ -1931,6 +1949,7 @@ class AccountInternal extends PureComponent<
                 : allTransactions.filter(t => !t.reconciled)
             }
             fetchAllIds={this.fetchAllIds}
+            preserveUnloadedSelection
             registerDispatch={dispatch => (this.dispatchSelected = dispatch)}
             selectAllFilter={selectAllFilter}
           >
