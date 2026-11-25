@@ -98,6 +98,7 @@ import {
   Field,
   InputCell,
   Row,
+  rowInteriorBackground,
   SelectCell,
   Table,
   UnexposedCellContent,
@@ -174,6 +175,9 @@ type AmountColumnWidths = {
   amount: number; // Applies to both debit and credit columns
   balance: number;
 };
+
+const DATE_COLUMN_WIDTH = 110;
+const STATUS_COLUMN_WIDTH = 38;
 
 export const DEFAULT_AMOUNT_COLUMN_WIDTHS: AmountColumnWidths = {
   amount: 100,
@@ -268,7 +272,7 @@ const TransactionHeader = memo(
     > = {
       date: {
         value: columnLabels.date,
-        width: 110,
+        width: DATE_COLUMN_WIDTH,
         alignItems: 'flex',
         marginLeft: -5,
         sortDirection: 'desc',
@@ -329,7 +333,7 @@ const TransactionHeader = memo(
       },
       cleared: {
         value: '✓',
-        width: 38,
+        width: STATUS_COLUMN_WIDTH,
         alignItems: 'center',
         tooltip: <ClearedColumnLegend />,
         sortDirection: 'asc',
@@ -514,7 +518,7 @@ function StatusCell({
   return (
     <Cell
       name="cleared"
-      width={38}
+      width={STATUS_COLUMN_WIDTH}
       alignItems="center"
       focused={focused}
       style={{ padding: 1 }}
@@ -991,6 +995,7 @@ function PayeeIcons({
 }
 
 type TransactionProps = {
+  sharedRowDivider?: boolean;
   allTransactions?: TransactionEntity[];
   getRegisterRow?: RegisterQuery['getRow'];
   transaction: TransactionEntity;
@@ -1063,6 +1068,7 @@ type TransactionProps = {
 };
 
 const Transaction = memo(function Transaction({
+  sharedRowDivider,
   allTransactions,
   getRegisterRow,
   transaction: originalTransaction,
@@ -1635,9 +1641,9 @@ const Transaction = memo(function Transaction({
           <Field
             key={columnId}
             /* Date blank placeholder for Child transaction */
-            width={110}
+            width={DATE_COLUMN_WIDTH}
             style={{
-              width: 110,
+              width: DATE_COLUMN_WIDTH,
               backgroundColor: theme.tableRowBackgroundHover,
               border: 0, // known z-order issue, bottom border for parent transaction hidden
             }}
@@ -1647,7 +1653,7 @@ const Transaction = memo(function Transaction({
             key={columnId}
             /* Date field for non-child transaction */
             name="date"
-            width={110}
+            width={DATE_COLUMN_WIDTH}
             textAlign="flex"
             exposed={focusedField === 'date'}
             value={date}
@@ -2127,6 +2133,16 @@ const Transaction = memo(function Transaction({
     }
   };
 
+  const rowBackground = selected
+    ? theme.tableRowBackgroundHighlight
+    : backgroundFocus
+      ? theme.tableRowBackgroundHover
+      : index % 2 === 0
+        ? theme.tableBackground
+        : theme.tableRowBackgroundAlternate;
+  const useSharedDivider =
+    sharedRowDivider && !selected && !editing && !backgroundFocus && !pulse;
+
   return (
     <View
       innerRef={dropRef}
@@ -2141,16 +2157,35 @@ const Transaction = memo(function Transaction({
         {...dragProps}
         {...(pulse && { 'data-pulse': true })}
         style={{
-          backgroundColor: selected
-            ? theme.tableRowBackgroundHighlight
-            : backgroundFocus
-              ? theme.tableRowBackgroundHover
-              : index % 2 === 0
-                ? theme.tableBackground
-                : theme.tableRowBackgroundAlternate,
-          ':hover': !(backgroundFocus || selected) && {
-            backgroundColor: theme.tableRowBackgroundHover,
-          },
+          ...(useSharedDivider
+            ? { backgroundImage: rowInteriorBackground(rowBackground) }
+            : { backgroundColor: rowBackground }),
+          ':hover':
+            !(backgroundFocus || selected) &&
+            (useSharedDivider
+              ? {
+                  backgroundImage: rowInteriorBackground(
+                    theme.tableRowBackgroundHover,
+                  ),
+                }
+              : { backgroundColor: theme.tableRowBackgroundHover }),
+          ...(useSharedDivider && {
+            '&& > *': {
+              borderTopColor: 'transparent',
+              borderBottomColor: 'transparent',
+              backgroundClip: 'padding-box',
+            },
+            '.register-reordering &': {
+              backgroundColor: rowBackground,
+              backgroundImage: 'none',
+              ':hover': { backgroundColor: theme.tableRowBackgroundHover },
+            },
+            '.register-reordering && > *': {
+              borderTopColor: theme.tableBorder,
+              borderBottomColor: theme.tableBorder,
+              backgroundClip: 'border-box',
+            },
+          }),
           '& .hover-visible': {
             opacity: 0,
           },
@@ -2724,6 +2759,78 @@ type TransactionTableInnerProps = {
   onDrop?: OnDropCallback;
 };
 
+function getTransactionRowFallback(
+  columns: readonly TransactionTableColumnId[],
+  amountColumnWidths: AmountColumnWidths,
+  width: number,
+  rowHeight: number,
+) {
+  const shade = `color-mix(in srgb, ${theme.tableText} 9%, transparent)`;
+  const fixedWidths: Partial<Record<TransactionTableColumnId, number>> = {
+    date: DATE_COLUMN_WIDTH,
+    cleared: STATUS_COLUMN_WIDTH,
+    payment: amountColumnWidths.amount,
+    deposit: amountColumnWidths.amount,
+    balance: amountColumnWidths.balance,
+  };
+  const barWidths: Partial<Record<TransactionTableColumnId, number>> = {
+    date: 64,
+    account: 72,
+    payee: 88,
+    category: 80,
+    group: 64,
+    payment: 48,
+    deposit: 48,
+    balance: 56,
+  };
+  const selectionWidth = 20;
+  const endPadding = 5;
+  const fixedWidth = columns.reduce(
+    (total, column) => total + (fixedWidths[column] ?? 0),
+    selectionWidth + endPadding,
+  );
+  const flexibleColumns = columns.filter(
+    column => fixedWidths[column] === undefined,
+  );
+  const flexibleWidth =
+    Math.max(0, width - fixedWidth) / Math.max(1, flexibleColumns.length);
+  const barHeight = 7;
+  const radius = barHeight / 2;
+  const barTop = Math.floor((rowHeight - barHeight) / 2);
+  const barBottom = barTop + barHeight;
+  const barCenter = barTop + radius;
+  let left = selectionWidth;
+
+  // Each layer repeats once per row and moves with native scrolling.
+  return columns
+    .map(column => {
+      const columnWidth = fixedWidths[column] ?? flexibleWidth;
+      const columnLeft = left;
+      left += columnWidth;
+      if (column === 'cleared') {
+        const x = columnLeft + (columnWidth - 12) / 2;
+        return `radial-gradient(circle at center, ${shade} 5px, transparent 6px) left ${x}px top 0 / 12px ${rowHeight}px repeat-y local`;
+      }
+      const amount =
+        column === 'payment' || column === 'deposit' || column === 'balance';
+      const availableWidth = Math.max(0, columnWidth - 10);
+      const barWidth = Math.floor(
+        Math.min(availableWidth * 0.65, barWidths[column] ?? Infinity),
+      );
+      if (barWidth <= barHeight) return '';
+      const x = amount ? left - 5 - barWidth : columnLeft + 5;
+      const endCap = (center: 'left' | 'right', offset: number) =>
+        `radial-gradient(circle ${radius}px at ${center} ${barCenter}px, ${shade} calc(100% - 0.5px), transparent 100%) left ${offset}px top 0 / ${radius}px ${rowHeight}px repeat-y local`;
+      return [
+        endCap('right', x),
+        `linear-gradient(to bottom, transparent 0 ${barTop}px, ${shade} ${barTop}px ${barBottom}px, transparent ${barBottom}px) left ${x + radius}px top 0 / ${barWidth - barHeight}px ${rowHeight}px repeat-y local`,
+        endCap('left', x + barWidth - radius),
+      ].join(', ');
+    })
+    .filter(Boolean)
+    .join(', ');
+}
+
 function TransactionTableInner({
   tableNavigator,
   tableRef,
@@ -2883,6 +2990,7 @@ function TransactionTableInner({
     return (
       <Transaction
         allTransactions={props.transactions}
+        sharedRowDivider
         getRegisterRow={props.getRegisterRow}
         editing={editing}
         transaction={trans}
@@ -3029,11 +3137,20 @@ function TransactionTableInner({
           listContainerRef={listContainerRef}
           items={transactionsToRender}
           renderItem={renderRow}
+          getRowFallbackBackground={(width, rowHeight) =>
+            getTransactionRowFallback(
+              props.columns,
+              amountColumnWidths,
+              width - scrollWidth,
+              rowHeight,
+            )
+          }
           renderEmpty={renderEmpty}
           loadMore={props.loadMoreTransactions}
           windowedRows={props.windowedRows}
           overscanCount={15}
           syncScrollJumps
+          showRowGrid
           isSelected={id => props.selectedItems.has(id)}
           onKeyDown={e => props.onCheckEnter(e)}
           saveScrollWidth={saveScrollWidth}

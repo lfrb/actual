@@ -52,7 +52,7 @@ import type {
   Spreadsheets,
 } from '#spreadsheet';
 
-import { FixedSizeList } from './FixedSizeList';
+import { FixedSizeList, ROW_REORDER_DURATION_MS } from './FixedSizeList';
 import {
   ConditionalPrivacyFilter,
   mergeConditionalPrivacyFilterProps,
@@ -907,6 +907,28 @@ export function SelectedItemsButton<Name extends string>({
   );
 }
 
+function getRowGridBackground(itemSize: number, backgroundColor: string) {
+  const scale = window.devicePixelRatio || 1;
+  const first = Math.floor(itemSize * scale);
+  const second = Math.floor(2 * itemSize * scale);
+  const dividerColor = `var(--register-divider-color, color-mix(in srgb, ${theme.tableBorder} 55%, ${backgroundColor}))`;
+
+  // A two-row tile preserves the fractional row spacing at 150% scaling.
+  return `linear-gradient(to bottom,
+    transparent 0 ${(first - 1) / scale}px,
+    ${dividerColor} ${(first - 1) / scale}px ${first / scale}px,
+    transparent ${first / scale}px ${(second - 1) / scale}px,
+    ${dividerColor} ${(second - 1) / scale}px ${second / scale}px,
+    transparent ${second / scale}px
+  ) left top / 100% ${2 * itemSize}px repeat-y local,
+  repeating-linear-gradient(to bottom, ${backgroundColor} 0 ${itemSize}px, ${theme.tableRowBackgroundAlternate} ${itemSize}px ${2 * itemSize}px) local`;
+}
+
+// Leave room for the shared divider at fractional device-pixel scales.
+export function rowInteriorBackground(color: string) {
+  return `linear-gradient(transparent 2px, ${color} 2px calc(100% - 2px), transparent calc(100% - 2px))`;
+}
+
 const rowStyle: CSSProperties = {
   position: 'absolute',
   willChange: 'transform',
@@ -948,6 +970,7 @@ export type TableProps<T extends TableItem = TableItem> = {
   rowHeight?: number;
   overscanCount?: number;
   syncScrollJumps?: boolean;
+  showRowGrid?: boolean;
   backgroundColor?: string;
   renderItem: (arg: {
     item: T;
@@ -958,6 +981,7 @@ export type TableProps<T extends TableItem = TableItem> = {
     position: number;
   }) => ReactNode;
   renderEmpty?: ReactNode | (() => ReactNode);
+  getRowFallbackBackground?: (width: number, rowHeight: number) => string;
   getItemKey?: (index: number) => T['id'];
   loadMore?: () => void;
   windowedRows?: {
@@ -986,9 +1010,11 @@ export const Table = forwardRef(
       rowHeight = ROW_HEIGHT,
       overscanCount = 5,
       syncScrollJumps,
+      showRowGrid,
       backgroundColor = theme.tableBackground,
       renderItem,
       renderEmpty,
+      getRowFallbackBackground,
       getItemKey,
       loadMore,
       windowedRows,
@@ -1139,7 +1165,9 @@ export const Table = forwardRef(
             ...rowStyle,
             zIndex: editing || selected ? 101 : 'auto',
             transform: 'translateY(var(--pos))',
-            backgroundColor,
+            ...(showRowGrid
+              ? { backgroundImage: rowInteriorBackground(backgroundColor) }
+              : { backgroundColor }),
           }}
           nativeStyle={{ '--pos': `${style.top - 1}px` }}
           className="animated-row"
@@ -1265,7 +1293,12 @@ export const Table = forwardRef(
           outline: 'none',
           overflow: 'hidden',
           '@media (prefers-reduced-motion: no-preference)': {
-            '& .animated .animated-row': { transition: '250ms transform' },
+            '& .animated .animated-row': {
+              transition: `${ROW_REORDER_DURATION_MS}ms transform`,
+            },
+            '& .register-reordering': {
+              '--register-divider-color': 'transparent',
+            },
           },
           ':focus-visible::after': {
             content: '""',
@@ -1303,6 +1336,17 @@ export const Table = forwardRef(
                   return null;
                 }
 
+                const rowGridBackground = showRowGrid
+                  ? getRowGridBackground(itemSize, backgroundColor)
+                  : undefined;
+                const fallback = getRowFallbackBackground?.(width, itemSize);
+                const rowsHeight = itemCount * itemSize;
+                // The repeating layers otherwise keep painting below the last row.
+                const emptyArea =
+                  (fallback || rowGridBackground) && rowsHeight < height
+                    ? `linear-gradient(to bottom, transparent 0 ${rowsHeight}px, ${backgroundColor} ${rowsHeight}px) local`
+                    : undefined;
+
                 return (
                   <AvoidRefocusScrollProvider>
                     <FixedSizeList
@@ -1328,6 +1372,11 @@ export const Table = forwardRef(
                       }
                       overscanCount={overscanCount}
                       syncScrollJumps={syncScrollJumps}
+                      scrollBackground={
+                        [emptyArea, fallback, rowGridBackground]
+                          .filter(Boolean)
+                          .join(', ') || undefined
+                      }
                       onItemsRendered={onItemsRendered}
                       rangeKey={windowedRows?.ids}
                       onScroll={onScroll}

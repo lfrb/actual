@@ -7,6 +7,8 @@ import { View } from '@actual-app/components/view';
 import { memoizeOne } from '@actual-app/core/shared/memoize';
 
 const IS_SCROLLING_DEBOUNCE_INTERVAL = 150;
+export const ROW_REORDER_DURATION_MS = 250;
+const REORDER_START_DELAY_MS = 10;
 
 const defaultItemKey: FixedSizeListProps['itemKey'] = (index: number) => index;
 
@@ -23,6 +25,7 @@ type FixedSizeListProps = {
   layout?: 'vertical' | 'horizontal';
   overscanCount?: number;
   syncScrollJumps?: boolean;
+  scrollBackground?: string;
   rangeKey?: object;
   useIsScrolling?: boolean;
   headerHeight?: number;
@@ -71,6 +74,7 @@ export class FixedSizeList extends PureComponent<
     offset: number;
   } = null;
   rerenderTimeout: ReturnType<typeof setTimeout>;
+  reorderTimeout?: ReturnType<typeof setTimeout>;
 
   static defaultProps: Partial<FixedSizeListProps> = {
     direction: 'ltr',
@@ -172,15 +176,26 @@ export class FixedSizeList extends PureComponent<
 
     if (this.needsAnimationRerender.current) {
       this.needsAnimationRerender.current = false;
+      if (
+        window.matchMedia('(prefers-reduced-motion: no-preference)').matches
+      ) {
+        this._outerRef?.classList.add('register-reordering');
+        clearTimeout(this.reorderTimeout);
+        this.reorderTimeout = setTimeout(() => {
+          this._outerRef?.classList.remove('register-reordering');
+        }, REORDER_START_DELAY_MS + ROW_REORDER_DURATION_MS);
+      }
       this.rerenderTimeout = setTimeout(() => {
         this.forceUpdate();
-      }, 10);
+      }, REORDER_START_DELAY_MS);
     }
 
     this._callPropsCallbacks();
   }
 
   componentWillUnmount() {
+    clearTimeout(this.reorderTimeout);
+    clearTimeout(this.rerenderTimeout);
     if (this._resetIsScrollingTimeoutId !== null) {
       clearTimeout(this._resetIsScrollingTimeoutId);
     }
@@ -204,36 +219,34 @@ export class FixedSizeList extends PureComponent<
     const positions = new Map();
 
     const items = [];
-    if (itemCount > 0) {
-      for (let index = startIndex; index <= stopIndex; index++) {
-        const key = itemKey(index);
-        let style = this._getItemStyle(index);
-        const lastPosition = this.lastPositions.current.get(key);
-        let animating = false;
-        positions.set(key, style.top);
+    for (let index = startIndex; itemCount > 0 && index <= stopIndex; index++) {
+      const key = itemKey(index);
+      let style = this._getItemStyle(index);
+      const lastPosition = this.lastPositions.current.get(key);
+      let animating = false;
+      positions.set(key, style.top);
 
-        if (
-          this.animationEnabled &&
-          lastPosition != null &&
-          lastPosition !== style.top
-        ) {
-          // A reorder has happened. Render it in the old place, then
-          // animate it to the new one
-          style = { ...style, top: lastPosition };
-          this.needsAnimationRerender.current = true;
-          animating = true;
-        }
-
-        items.push(
-          renderRow({
-            index,
-            key,
-            style,
-            isScrolling: useIsScrolling ? isScrolling : undefined,
-            isAnimating: animating,
-          }),
-        );
+      if (
+        this.animationEnabled &&
+        lastPosition != null &&
+        lastPosition !== style.top
+      ) {
+        // A reorder has happened. Render it in the old place, then
+        // animate it to the new one.
+        style = { ...style, top: lastPosition };
+        this.needsAnimationRerender.current = true;
+        animating = true;
       }
+
+      items.push(
+        renderRow({
+          index,
+          key,
+          style,
+          isScrolling: useIsScrolling ? isScrolling : undefined,
+          isAnimating: animating,
+        }),
+      );
     }
 
     this.lastPositions.current = positions;
@@ -251,6 +264,7 @@ export class FixedSizeList extends PureComponent<
           height,
           width,
           overflow: 'hidden auto',
+          background: this.props.scrollBackground,
         }}
       >
         <View>{header}</View>
