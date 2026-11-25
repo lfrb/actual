@@ -946,6 +946,8 @@ export type TableProps<T extends TableItem = TableItem> = {
   contentHeader?: ReactNode;
   loading?: boolean;
   rowHeight?: number;
+  overscanCount?: number;
+  syncScrollJumps?: boolean;
   backgroundColor?: string;
   renderItem: (arg: {
     item: T;
@@ -976,6 +978,8 @@ export const Table = forwardRef(
       contentHeader,
       loading,
       rowHeight = ROW_HEIGHT,
+      overscanCount = 5,
+      syncScrollJumps,
       backgroundColor = theme.tableBackground,
       renderItem,
       renderEmpty,
@@ -1306,7 +1310,8 @@ export const Table = forwardRef(
                           ? getScrollOffset(height, initialScrollTo.current)
                           : 0
                       }
-                      overscanCount={5}
+                      overscanCount={overscanCount}
+                      syncScrollJumps={syncScrollJumps}
                       onItemsRendered={onItemsRendered}
                       onScroll={onScroll}
                     />

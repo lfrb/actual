@@ -1,6 +1,7 @@
 // @ts-strict-ignore
 import { createRef, PureComponent } from 'react';
 import type { CSSProperties, ReactNode, Ref, RefObject, UIEvent } from 'react';
+import { flushSync } from 'react-dom';
 
 import { View } from '@actual-app/components/view';
 import { memoizeOne } from '@actual-app/core/shared/memoize';
@@ -21,6 +22,7 @@ type FixedSizeListProps = {
   }) => ReactNode;
   layout?: 'vertical' | 'horizontal';
   overscanCount?: number;
+  syncScrollJumps?: boolean;
   useIsScrolling?: boolean;
   headerHeight?: number;
   initialScrollOffset?: number;
@@ -510,24 +512,38 @@ export class FixedSizeList extends PureComponent<
   _onScrollVertical = (event: UIEvent<HTMLDivElement>) => {
     const { scrollTop } = event.currentTarget;
 
-    this.setState(prevState => {
-      if (prevState.scrollOffset === scrollTop) {
-        // Scroll position may have been updated by cDM/cDU,
-        // In which case we don't need to trigger another render,
-        // And we don't want to update state.isScrolling.
-        return null;
-      }
+    const updateScrollPosition = () => {
+      this.setState(prevState => {
+        if (prevState.scrollOffset === scrollTop) {
+          // Scroll position may have been updated by cDM/cDU,
+          // In which case we don't need to trigger another render,
+          // And we don't want to update state.isScrolling.
+          return null;
+        }
 
-      const scrollOffset = scrollTop;
+        const scrollOffset = scrollTop;
 
-      return {
-        isScrolling: true,
-        scrollDirection:
-          prevState.scrollOffset < scrollOffset ? 'forward' : 'backward',
-        scrollOffset,
-        scrollUpdateWasRequested: false,
-      };
-    }, this._resetIsScrollingDebounced);
+        return {
+          isScrolling: true,
+          scrollDirection:
+            prevState.scrollOffset < scrollOffset ? 'forward' : 'backward',
+          scrollOffset,
+          scrollUpdateWasRequested: false,
+        };
+      }, this._resetIsScrollingDebounced);
+    };
+
+    // Dragging the scrollbar can move the viewport beyond every mounted row.
+    // Commit the new window in the scroll event so React does not defer it.
+    if (
+      this.props.syncScrollJumps &&
+      Math.abs(scrollTop - this.state.scrollOffset) >=
+        event.currentTarget.clientHeight
+    ) {
+      flushSync(updateScrollPosition);
+    } else {
+      updateScrollPosition();
+    }
   };
 
   _outerRefSetter = (ref: HTMLDivElement) => {

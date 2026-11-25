@@ -3024,6 +3024,8 @@ function TransactionTableInner({
           renderItem={renderRow}
           renderEmpty={renderEmpty}
           loadMore={props.loadMoreTransactions}
+          overscanCount={15}
+          syncScrollJumps
           isSelected={id => props.selectedItems.has(id)}
           onKeyDown={e => props.onCheckEnter(e)}
           saveScrollWidth={saveScrollWidth}
