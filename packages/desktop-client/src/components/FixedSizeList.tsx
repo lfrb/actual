@@ -177,7 +177,7 @@ export class FixedSizeList extends PureComponent<
     if (this.needsAnimationRerender.current) {
       this.needsAnimationRerender.current = false;
       if (
-        window.matchMedia('(prefers-reduced-motion: no-preference)').matches
+        window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches
       ) {
         this._outerRef?.classList.add('register-reordering');
         clearTimeout(this.reorderTimeout);
