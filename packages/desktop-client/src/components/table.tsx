@@ -1124,6 +1124,7 @@ export const Table = forwardRef(
             backgroundColor,
           }}
           nativeStyle={{ '--pos': `${style.top - 1}px` }}
+          className="animated-row"
           data-focus-key={item.id}
         >
           {row}
@@ -1243,6 +1244,9 @@ export const Table = forwardRef(
           flex: 1,
           outline: 'none',
           overflow: 'hidden',
+          '@media (prefers-reduced-motion: no-preference)': {
+            '& .animated .animated-row': { transition: '250ms transform' },
+          },
           ':focus-visible::after': {
             content: '""',
             position: 'absolute',
