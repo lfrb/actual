@@ -996,6 +996,7 @@ function PayeeIcons({
 
 type TransactionProps = {
   sharedRowDivider?: boolean;
+  onDatePicked?: () => void;
   allTransactions?: TransactionEntity[];
   getRegisterRow?: RegisterQuery['getRow'];
   transaction: TransactionEntity;
@@ -1069,6 +1070,7 @@ type TransactionProps = {
 
 const Transaction = memo(function Transaction({
   sharedRowDivider,
+  onDatePicked,
   allTransactions,
   getRegisterRow,
   transaction: originalTransaction,
@@ -1686,6 +1688,7 @@ const Transaction = memo(function Transaction({
                 clearOnBlur
                 onUpdate={onUpdate}
                 onSelect={onSave}
+                onCalendarSelect={onDatePicked}
                 transferDateSyncChecked={syncTransferDate}
                 onTransferDateSyncChange={
                   transaction.transfer_id ||
@@ -2991,6 +2994,7 @@ function TransactionTableInner({
       <Transaction
         allTransactions={props.transactions}
         sharedRowDivider
+        onDatePicked={() => tableNavigator.onEdit(null)}
         getRegisterRow={props.getRegisterRow}
         editing={editing}
         transaction={trans}
