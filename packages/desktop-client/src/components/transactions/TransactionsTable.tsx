@@ -138,6 +138,7 @@ import { NotesTagFormatter } from '#notes/NotesTagFormatter';
 import { addNotification } from '#notifications/notificationsSlice';
 import { getPayeesById } from '#payees';
 import { aqlQuery } from '#queries/aqlQuery';
+import type { RegisterQuery } from '#queries/registerQuery';
 import { useDispatch } from '#redux';
 import { getStatusLabel } from '#util/schedule';
 import {
@@ -991,6 +992,7 @@ function PayeeIcons({
 
 type TransactionProps = {
   allTransactions?: TransactionEntity[];
+  getRegisterRow?: RegisterQuery['getRow'];
   transaction: TransactionEntity;
   subtransactions: TransactionEntity[] | null;
   transferAccountsByTransaction: {
@@ -1062,6 +1064,7 @@ type TransactionProps = {
 
 const Transaction = memo(function Transaction({
   allTransactions,
+  getRegisterRow,
   transaction: originalTransaction,
   subtransactions,
   transferAccountsByTransaction,
@@ -1555,7 +1558,8 @@ const Transaction = memo(function Transaction({
   useTransactionRowContextActions({
     rowRef: triggerRef,
     transaction,
-    getTransaction: id => allTransactions?.find(t => t.id === id),
+    getTransaction: id =>
+      getRegisterRow?.(id) ?? allTransactions?.find(t => t.id === id),
     onDelete: ids => onBatchDelete?.(ids),
     onDuplicate: ids => onBatchDuplicate?.(ids),
     onLinkSchedule: ids => onBatchLinkSchedule?.(ids),
@@ -2650,7 +2654,9 @@ type TransactionTableInnerProps = {
   newTransactions: TransactionEntity[];
 
   transactions: TransactionEntity[];
-  loadMoreTransactions: () => void;
+  loadMoreTransactions?: () => void;
+  windowedRows?: TableProps<TransactionEntity>['windowedRows'];
+  getRegisterRow?: RegisterQuery['getRow'];
   accounts: AccountEntity[];
   categoryGroups: CategoryGroupEntity[];
   payees: PayeeEntity[];
@@ -2877,6 +2883,7 @@ function TransactionTableInner({
     return (
       <Transaction
         allTransactions={props.transactions}
+        getRegisterRow={props.getRegisterRow}
         editing={editing}
         transaction={trans}
         transferAccountsByTransaction={props.transferAccountsByTransaction}
@@ -3024,6 +3031,7 @@ function TransactionTableInner({
           renderItem={renderRow}
           renderEmpty={renderEmpty}
           loadMore={props.loadMoreTransactions}
+          windowedRows={props.windowedRows}
           overscanCount={15}
           syncScrollJumps
           isSelected={id => props.selectedItems.has(id)}
@@ -3061,7 +3069,11 @@ type TableState = {
 
 export type TransactionTableProps = {
   transactions: readonly TransactionEntity[];
-  loadMoreTransactions: () => void;
+  loadMoreTransactions?: () => void;
+  registerGroups?: RegisterQuery['groups'];
+  getRegisterRow?: RegisterQuery['getRow'];
+  upcomingTransactions?: readonly TransactionEntity[];
+  requestRegisterRange?: RegisterQuery['requestRange'];
   accounts: AccountEntity[];
   categoryGroups: CategoryGroupEntity[];
   payees: PayeeEntity[];
@@ -3288,6 +3300,61 @@ export const TransactionTable = forwardRef(
       );
     }, [transactionsWithExpandedSplits]);
 
+    const { registerGroups, upcomingTransactions, requestRegisterRange } =
+      props;
+    const registerRows = useMemo(() => {
+      if (!registerGroups) return;
+      const ids: string[] = [];
+      const groupPositions: number[] = [];
+      const indices = new Map<string, number>();
+
+      function addRow(
+        row: { id: string; reconciled?: TransactionEntity['reconciled'] },
+        groupIndex: number,
+      ) {
+        if (!props.showReconciled && row.reconciled) return;
+        indices.set(row.id, ids.length);
+        ids.push(row.id);
+        groupPositions.push(groupIndex);
+      }
+
+      upcomingTransactions?.forEach(row => {
+        if (!row.parent_id || splitsExpanded.isExpanded(row.parent_id)) {
+          addRow(row, 0);
+        }
+      });
+      registerGroups.forEach((group, groupIndex) => {
+        addRow(group, groupIndex);
+        if (
+          group.subtransactions.length &&
+          splitsExpanded.isExpanded(group.id)
+        ) {
+          group.subtransactions.forEach(row => addRow(row, groupIndex));
+        }
+      });
+      return { ids, groupPositions, indices };
+    }, [
+      registerGroups,
+      upcomingTransactions,
+      props.showReconciled,
+      splitsExpanded,
+    ]);
+
+    const windowedRows =
+      useMemo((): TableProps<TransactionEntity>['windowedRows'] => {
+        if (!registerRows || !requestRegisterRange) return;
+        return {
+          ids: registerRows.ids,
+          getItem: index => transactionMap.get(registerRows.ids[index]),
+          indexOf: id => registerRows.indices.get(id) ?? -1,
+          requestRange: (start, stop) => {
+            requestRegisterRange(
+              registerRows.groupPositions.slice(start, stop + 1),
+            );
+          },
+        };
+      }, [registerRows, requestRegisterRange, transactionMap]);
+
     // Scrolls to the focused transaction once it's listed, and again when
     // rows are added above it, e.g. upcoming scheduled transactions
     const { focusedTransactionId, onFocusedTransactionShown } = props;
@@ -3373,6 +3440,7 @@ export const TransactionTable = forwardRef(
     const tableNavigator = useTableNavigator(
       transactionsWithExpandedSplits,
       getFieldsTableTransaction,
+      windowedRows?.indexOf,
     );
     const shouldSchedule = useRef(false);
     const shouldAdd = useRef(false);
@@ -4115,6 +4183,7 @@ export const TransactionTable = forwardRef(
             {...props}
             columns={visibleColumns}
             transactions={transactionsWithExpandedSplits}
+            windowedRows={windowedRows}
             transactionMap={transactionMap}
             transactionsByParent={transactionsByParent}
             transferAccountsByTransaction={transferAccountsByTransaction}

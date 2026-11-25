@@ -23,6 +23,7 @@ type FixedSizeListProps = {
   layout?: 'vertical' | 'horizontal';
   overscanCount?: number;
   syncScrollJumps?: boolean;
+  rangeKey?: object;
   useIsScrolling?: boolean;
   headerHeight?: number;
   initialScrollOffset?: number;
@@ -388,6 +389,7 @@ export class FixedSizeList extends PureComponent<
       overscanStopIndex,
       visibleStartIndex,
       visibleStopIndex,
+      _rangeKey,
     ) =>
       this.props.onItemsRendered({
         overscanStartIndex,
@@ -421,6 +423,7 @@ export class FixedSizeList extends PureComponent<
           overscanStopIndex,
           visibleStartIndex,
           visibleStopIndex,
+          this.props.rangeKey,
         );
       }
     }

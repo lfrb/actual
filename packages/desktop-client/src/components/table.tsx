@@ -960,6 +960,12 @@ export type TableProps<T extends TableItem = TableItem> = {
   renderEmpty?: ReactNode | (() => ReactNode);
   getItemKey?: (index: number) => T['id'];
   loadMore?: () => void;
+  windowedRows?: {
+    ids: readonly T['id'][];
+    getItem: (index: number) => T | undefined;
+    indexOf: (id: T['id']) => number;
+    requestRange: (start: number, stop: number) => void;
+  };
   style?: CSSProperties;
   navigator?: ReturnType<typeof useTableNavigator<T>>;
   listContainerRef?: RefObject<HTMLDivElement>;
@@ -985,6 +991,7 @@ export const Table = forwardRef(
       renderEmpty,
       getItemKey,
       loadMore,
+      windowedRows,
       style,
       navigator,
       onScroll,
@@ -996,6 +1003,10 @@ export const Table = forwardRef(
     },
     ref,
   ) => {
+    const itemSize = rowHeight - 1;
+    const itemCount = windowedRows?.ids.length ?? (count || items.length);
+    const indexForKey = (id: TableItem['id']) =>
+      windowedRows?.indexOf(id) ?? items.findIndex(item => item.id === id);
     const hasNavigator = navigator != null;
     if (!navigator) {
       navigator = {
@@ -1024,7 +1035,7 @@ export const Table = forwardRef(
 
     useImperativeHandle(ref, () => ({
       scrollTo: (id, alignment = 'smart') => {
-        const index = items.findIndex(item => item.id === id);
+        const index = indexForKey(id);
         if (index !== -1) {
           if (!list.current) {
             // If the table hasn't been laid out yet, we need to wait for
@@ -1044,7 +1055,9 @@ export const Table = forwardRef(
         if (scrollContainer.current) {
           const offset = scrollContainer.current.scrollTop;
           const index = list.current.getStartIndexForOffset(offset);
-          return items[index].id;
+          return (
+            (windowedRows ? windowedRows.ids[index] : items[index]?.id) ?? 0
+          );
         }
         return 0;
       },
@@ -1102,7 +1115,8 @@ export const Table = forwardRef(
     });
 
     function renderRow({ index, style, key }) {
-      const item = items[index];
+      const item = windowedRows ? windowedRows.getItem(index) : items[index];
+      if (!item) return null;
       const editing = editingId === item.id;
       const selected = isSelected && isSelected(item.id);
 
@@ -1145,8 +1159,10 @@ export const Table = forwardRef(
       );
     }
 
-    function onItemsRendered({ overscanStopIndex }) {
-      if (loadMore && overscanStopIndex > items.length - 100) {
+    function onItemsRendered({ overscanStartIndex, overscanStopIndex }) {
+      if (windowedRows) {
+        windowedRows.requestRange(overscanStartIndex, overscanStopIndex);
+      } else if (loadMore && overscanStopIndex > items.length - 100) {
         loadMore();
       }
     }
@@ -1188,7 +1204,7 @@ export const Table = forwardRef(
       );
     }
 
-    const isEmpty = (count || items.length) === 0;
+    const isEmpty = itemCount === 0;
 
     const navigatorProps = getNavigatorProps(props);
 
@@ -1274,7 +1290,7 @@ export const Table = forwardRef(
         )}
         <View
           style={{
-            flex: `1 1 ${rowHeight * Math.max(2, items.length)}px`,
+            flex: `1 1 ${rowHeight * Math.max(2, itemCount)}px`,
             backgroundColor,
           }}
         >
@@ -1297,14 +1313,14 @@ export const Table = forwardRef(
                       width={width}
                       height={height}
                       renderRow={renderRow}
-                      itemCount={count || items.length}
-                      itemSize={rowHeight - 1}
+                      itemCount={itemCount}
+                      itemSize={itemSize}
                       itemKey={
-                        getItemKey || ((index: number) => items[index].id)
+                        getItemKey ||
+                        ((index: number) =>
+                          windowedRows?.ids[index] ?? items[index].id)
                       }
-                      indexForKey={key =>
-                        items.findIndex(item => item.id === key)
-                      }
+                      indexForKey={indexForKey}
                       initialScrollOffset={
                         initialScrollTo.current
                           ? getScrollOffset(height, initialScrollTo.current)
@@ -1313,6 +1329,7 @@ export const Table = forwardRef(
                       overscanCount={overscanCount}
                       syncScrollJumps={syncScrollJumps}
                       onItemsRendered={onItemsRendered}
+                      rangeKey={windowedRows?.ids}
                       onScroll={onScroll}
                     />
                   </AvoidRefocusScrollProvider>
@@ -1351,6 +1368,7 @@ export type TableNavigator<T extends TableItem> = {
 export function useTableNavigator<T extends TableItem>(
   data: T[],
   fields: string[] | ((item?: T) => string[]),
+  getRowIndex?: (id: T['id']) => number,
 ): TableNavigator<T> {
   const getFields = typeof fields !== 'function' ? () => fields : fields;
   const [editingId, setEditingId] = useState<T['id']>(null);
@@ -1394,9 +1412,16 @@ export function useTableNavigator<T extends TableItem>(
     }, 100);
   }
 
+  function areAdjacent(first: T, second: T) {
+    return (
+      !getRowIndex ||
+      Math.abs(getRowIndex(first.id) - getRowIndex(second.id)) === 1
+    );
+  }
+
   function onFocusPrevious() {
     const idx = data.findIndex(item => item.id === editingId);
-    if (idx > 0) {
+    if (idx > 0 && areAdjacent(data[idx], data[idx - 1])) {
       const item = data[idx - 1];
       const fields = getFields(item);
       onEdit(item.id, fields[fields.length - 1]);
@@ -1407,7 +1432,11 @@ export function useTableNavigator<T extends TableItem>(
 
   function onFocusNext() {
     const idx = data.findIndex(item => item.id === editingId);
-    if (idx < data.length - 1) {
+    if (
+      idx >= 0 &&
+      idx < data.length - 1 &&
+      areAdjacent(data[idx], data[idx + 1])
+    ) {
       const item = data[idx + 1];
       const fields = getFields(item);
       onEdit(item.id, fields[0]);
@@ -1437,8 +1466,14 @@ export function useTableNavigator<T extends TableItem>(
       let nextIdx = idx;
 
       while (true) {
+        const previous = data[nextIdx];
         nextIdx = nextIdx + dir;
-        if (nextIdx >= 0 && nextIdx < data.length) {
+        if (
+          previous &&
+          nextIdx >= 0 &&
+          nextIdx < data.length &&
+          areAdjacent(previous, data[nextIdx])
+        ) {
           const next = data[nextIdx];
           if (getFields(next).includes(focusedField)) {
             onEdit(next.id, focusedField);

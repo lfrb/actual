@@ -1,10 +1,4 @@
-import React, {
-  createRef,
-  PureComponent,
-  startTransition,
-  useEffect,
-  useMemo,
-} from 'react';
+import React, { createRef, PureComponent, useEffect, useMemo } from 'react';
 import type { ReactElement, RefObject } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Trans } from 'react-i18next';
@@ -88,8 +82,8 @@ import { addNotification } from '#notifications/notificationsSlice';
 import { useCreatePayeeMutation } from '#payees';
 import * as queries from '#queries';
 import { aqlQuery } from '#queries/aqlQuery';
-import { pagedQuery } from '#queries/pagedQuery';
-import type { PagedQuery } from '#queries/pagedQuery';
+import { RegisterQuery } from '#queries/registerQuery';
+import type { RegisterRow } from '#queries/registerQuery';
 import { useDispatch, useSelector } from '#redux';
 import type { AppDispatch } from '#redux/store';
 import { updateNewTransactions } from '#transactions/transactionsSlice';
@@ -115,6 +109,7 @@ type AllTransactionsProps = {
   children: (
     transactions: TransactionEntity[],
     balances: Record<TransactionEntity['id'], IntegerAmount> | null,
+    upcomingTransactions?: readonly TransactionEntity[],
   ) => ReactElement;
 };
 
@@ -182,7 +177,7 @@ function AllTransactions({
   if (!previewTransactions?.length || filtered) {
     return children(transactions, balances);
   }
-  return children(allTransactions, allBalances);
+  return children(allTransactions, allBalances, previewTransactions);
 }
 
 function getField(field?: string) {
@@ -311,13 +306,12 @@ class AccountInternal extends PureComponent<
   AccountInternalProps,
   AccountInternalState
 > {
-  paged: PagedQuery<TransactionEntity> | null;
+  paged: RegisterQuery | null;
   rootQuery!: Query;
   currentQuery!: Query;
   table: TableRef;
   unlisten?: () => void;
   dispatchSelected?: (action: Actions) => void;
-  _isOptimisticUpdate: boolean = false;
   // A transaction to bring into view once the account is loaded
   pendingFocusId: TransactionEntity['id'] | null = null;
 
@@ -449,28 +443,10 @@ class AccountInternal extends PureComponent<
     }
   }
 
-  fetchAllIds = async () => {
-    const paged = this.paged;
-    if (!paged) return [];
-
-    const { showReconciled, search } = this.state;
-    const { accountId } = this.props;
-    const { data } = await aqlQuery(paged.query.select(['id', 'reconciled']));
-    if (
-      paged !== this.paged ||
-      accountId !== this.props.accountId ||
-      search !== this.state.search ||
-      showReconciled !== this.state.showReconciled
-    ) {
-      return [];
-    }
-
-    return (data as TransactionEntity[]).flatMap(row =>
-      [row, ...(row.subtransactions ?? [])]
-        .filter(transaction => showReconciled || !transaction.reconciled)
-        .map(transaction => transaction.id),
-    );
-  };
+  fetchAllIds = async () =>
+    (this.paged?.rows ?? [])
+      .filter(row => this.state.showReconciled || !row.reconciled)
+      .map(row => row.id);
 
   refetchTransactions = async () => {
     void this.paged?.run();
@@ -514,82 +490,55 @@ class AccountInternal extends PureComponent<
     ) {
       this.dispatchSelected?.({ type: 'select-none' });
     }
-    const paged = pagedQuery<TransactionEntity>(registerQuery, {
-      onData: async (groupedData, prevData) => {
-        const data = ungroupTransactions([...groupedData]);
-        const firstLoad = prevData == null;
+    let displayedIndex: RegisterQuery['groups'] | null = null;
+    const paged = new RegisterQuery(registerQuery, groupedData => {
+      if (paged !== this.paged) return;
+      const currentIndex = paged.groups;
+      const data = ungroupTransactions(groupedData);
+      const firstLoad = displayedIndex === null;
+      const indexChanged = displayedIndex !== currentIndex;
+      displayedIndex = currentIndex;
 
-        // Fast path for optimistic updates (e.g. field edits): skip the
-        // expensive aggregate DB queries (calculateBalances, getFilteredAmount)
-        // and just update the transaction list in state directly. Balances and
-        // filteredAmount will be refreshed on the next full DB-driven onData.
-        if (this._isOptimisticUpdate) {
-          this._isOptimisticUpdate = false;
-          const transactionsSnapshot = data;
-          const balances = await this.calculateBalances();
-          // Wrap in startTransition so React treats this as a low-priority
-          // update. Without this, setState blocks the main thread for the
-          // full duration of the re-render (~40–220ms with large transaction
-          // lists), preventing input events from being processed and making
-          // the UI feel frozen. startTransition lets React break the render
-          // into chunks and yield to the browser between them, keeping the
-          // UI responsive while the row update happens in the background.
-          startTransition(() => {
-            this.setState({
-              transactions: transactionsSnapshot,
-              ...balances,
-            });
-          });
-          return;
-        }
+      if (firstLoad) {
+        this.table.current?.setRowAnimation(false);
+        this.props.splitsExpandedDispatch({
+          type: 'set-mode',
+          mode: !isFiltered && this.props.expandSplits ? 'expand' : 'collapse',
+        });
+      }
 
-        if (firstLoad) {
-          this.table.current?.setRowAnimation(false);
-
-          if (isFiltered) {
-            this.props.splitsExpandedDispatch({
-              type: 'set-mode',
-              mode: 'collapse',
-            });
-          } else {
-            this.props.splitsExpandedDispatch({
-              type: 'set-mode',
-              mode: this.props.expandSplits ? 'expand' : 'collapse',
-            });
-          }
-        }
-
-        const balances = await this.calculateBalances();
-        const filteredAmount = await this.getFilteredAmount();
-        this.setState(
-          {
-            transactions: data,
+      this.setState(
+        {
+          transactions: data,
+          ...(indexChanged && {
             transactionsFiltered: isFiltered,
             loading: false,
             workingHard: false,
-            ...balances,
-            filteredAmount,
-          },
-          () => {
-            if (firstLoad) {
-              this.table.current?.scrollToTop();
-              if (paged === this.paged) {
-                void this.showPendingFocus(paged);
-              }
-            }
+          }),
+        },
+        () => {
+          if (paged !== this.paged) return;
+          if (firstLoad) {
+            this.table.current?.scrollToTop();
+            void this.showPendingFocus(paged);
+          }
+          this.table.current?.setRowAnimation(true);
+        },
+      );
 
-            setTimeout(() => {
-              this.table.current?.setRowAnimation(true);
-            }, 0);
-          },
-        );
-      },
-      options: {
-        pageCount: 150,
-        onlySync: true,
-      },
+      if (indexChanged) {
+        void Promise.all([
+          this.calculateBalances(),
+          this.getFilteredAmount(),
+        ]).then(([balances, filteredAmount]) => {
+          if (paged === this.paged && currentIndex === paged.groups) {
+            this.setState({ ...balances, filteredAmount });
+          }
+        });
+      }
     });
     this.paged = paged;
+    void paged.run();
   }
 
   // oxlint-disable-next-line react/no-unsafe
@@ -619,7 +568,7 @@ class AccountInternal extends PureComponent<
   // Brings the pending transaction into view, loading the account up to it
   // if needed. Leaves the account at the top when the query doesn't have it,
   // e.g. while reconciled transactions are hidden.
-  showPendingFocus = async (paged: PagedQuery<TransactionEntity>) => {
+  showPendingFocus = async (paged: RegisterQuery) => {
     const id = this.pendingFocusId;
     this.pendingFocusId = null;
     // Only in the default date order; the lookup relies on it
@@ -627,7 +576,7 @@ class AccountInternal extends PureComponent<
       return;
     }
     if (!this.state.transactions.some(t => t.id === id)) {
-      await paged.refetchUpToRow(id, { field: 'date', order: 'desc' });
+      await paged.requestTransactions([id]);
     }
 
     const transaction = ungroupTransactions(paged.data).find(t => t.id === id);
@@ -749,19 +698,16 @@ class AccountInternal extends PureComponent<
     }
   };
 
-  onTransactionsChange = (updatedTransaction: TransactionEntity) => {
-    // Apply changes to pagedQuery data optimistically. Set the flag so that
-    // onData skips the expensive aggregate DB queries for this update.
-    this._isOptimisticUpdate = true;
-    this.paged?.optimisticUpdate(data => {
-      if (updatedTransaction._deleted) {
-        return data.filter(t => t.id !== updatedTransaction.id);
-      } else {
-        return data.map(t => {
-          return t.id === updatedTransaction.id ? updatedTransaction : t;
-        });
-      }
-    });
+  onTransactionsChange = (
+    updatedTransaction: TransactionEntity,
+    _transactions: TransactionEntity[],
+    committed?: boolean,
+  ) => {
+    this.paged?.updateCachedTransaction(updatedTransaction);
+    if (committed) {
+      // A saved edit can change query membership or sort position.
+      void this.paged?.run();
+    }
 
     this.props.dispatch(updateNewTransactions({ id: updatedTransaction.id }));
   };
@@ -813,9 +759,16 @@ class AccountInternal extends PureComponent<
     try {
       this.setState({ workingHard: true });
       // Bulk fetch transactions
-      const transactions = this.state.transactions.filter(trans =>
-        ids.includes(trans.id),
-      );
+      const transactions: TransactionEntity[] = [];
+      for (let offset = 0; offset < ids.length; offset += 150) {
+        const { data } = await aqlQuery(
+          q('transactions')
+            .options({ splits: 'all' })
+            .filter({ id: { $oneof: ids.slice(offset, offset + 150) } })
+            .select('*'),
+        );
+        transactions.push(...data);
+      }
       const changedTransactions: TransactionEntity[] = [];
       const allErrors: string[] = [];
 
@@ -1918,10 +1871,15 @@ class AccountInternal extends PureComponent<
 
     const balanceQuery = this.getBalanceQuery(accountId);
 
-    const selectAllFilter = (item: TransactionEntity): boolean => {
+    const registerGroups = this.paged?.groups ?? [];
+    const registerRows = this.paged?.rows ?? [];
+    const selectAllFilter = (item: RegisterRow): boolean => {
       if (item.is_parent) {
-        const children = transactions.filter(t => t.parent_id === item.id);
-        return children.every(t => selectAllFilter(t));
+        return (
+          this.paged
+            ?.getGroup(item.id)
+            ?.subtransactions.every(child => !child._unmatched) ?? true
+        );
       }
       return !item._unmatched;
     };
@@ -1935,7 +1893,7 @@ class AccountInternal extends PureComponent<
         showBalances={showBalances}
         filtered={transactionsFiltered}
       >
-        {(allTransactions, allBalances) => (
+        {(allTransactions, allBalances, upcomingTransactions) => (
           <SelectedProviderWithItems
             name="transactions"
             // When reconciled transactions are hidden they are still
@@ -1945,11 +1903,14 @@ class AccountInternal extends PureComponent<
             // (shift+click) only covers visible transactions.
             items={
               showReconciled
-                ? allTransactions
-                : allTransactions.filter(t => !t.reconciled)
+                ? upcomingTransactions
+                  ? [...upcomingTransactions, ...registerRows]
+                  : registerRows
+                : [...(upcomingTransactions ?? []), ...registerRows].filter(
+                    t => !t.reconciled,
+                  )
             }
             fetchAllIds={this.fetchAllIds}
-            preserveUnloadedSelection
             registerDispatch={dispatch => (this.dispatchSelected = dispatch)}
             selectAllFilter={selectAllFilter}
           >
@@ -1965,7 +1926,7 @@ class AccountInternal extends PureComponent<
                 accountName={accountName}
                 accountsSyncing={accountsSyncing}
                 accounts={accounts}
-                transactions={transactions}
+                getTransaction={id => this.paged?.getRow(id)}
                 showExtraBalances={showExtraBalances ?? false}
                 showReconciled={showReconciled ?? false}
                 showEmptyMessage={showEmptyMessage ?? false}
@@ -2020,9 +1981,10 @@ class AccountInternal extends PureComponent<
                   account={account}
                   transactions={transactions}
                   allTransactions={allTransactions}
-                  loadMoreTransactions={() =>
-                    this.paged && this.paged.fetchNext()
-                  }
+                  registerGroups={registerGroups}
+                  getRegisterRow={this.paged?.getRow}
+                  upcomingTransactions={upcomingTransactions}
+                  requestRegisterRange={this.paged?.requestRange}
                   accounts={accounts}
                   category={category}
                   categoryGroups={categoryGroups}

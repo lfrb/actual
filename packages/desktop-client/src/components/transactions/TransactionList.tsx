@@ -80,6 +80,7 @@ async function saveDiffAndApply(diff, changes, onChange, learnCategories) {
     applyTransactionDiff(changes.newTransaction, remoteDiff),
     // @ts-expect-error - fix me
     applyChanges(remoteDiff, changes.data),
+    true,
   );
 }
 
@@ -96,6 +97,10 @@ type TransactionListProps = Pick<
   | 'isAdding'
   | 'isMatched'
   | 'isNew'
+  | 'requestRegisterRange'
+  | 'registerGroups'
+  | 'getRegisterRow'
+  | 'upcomingTransactions'
   | 'loadMoreTransactions'
   | 'onBatchDelete'
   | 'onBatchDuplicate'
@@ -129,6 +134,7 @@ type TransactionListProps = Pick<
   onChange: (
     transaction: TransactionEntity,
     transactions: TransactionEntity[],
+    committed?: boolean,
   ) => void;
   onApplyFilter: (
     f: Partial<RuleConditionEntity> | TransactionFilterEntity,
@@ -140,6 +146,10 @@ export function TransactionList({
   tableRef,
   transactions,
   allTransactions,
+  requestRegisterRange,
+  registerGroups,
+  getRegisterRow,
+  upcomingTransactions,
   loadMoreTransactions,
   account,
   accounts,
@@ -509,6 +519,10 @@ export function TransactionList({
         transactions={allTransactions}
         focusedTransactionId={focusedTransactionId}
         onFocusedTransactionShown={onFocusedTransactionShown}
+        requestRegisterRange={requestRegisterRange}
+        registerGroups={registerGroups}
+        getRegisterRow={getRegisterRow}
+        upcomingTransactions={upcomingTransactions}
         loadMoreTransactions={loadMoreTransactions}
         accounts={accounts}
         categoryGroups={categoryGroups}
