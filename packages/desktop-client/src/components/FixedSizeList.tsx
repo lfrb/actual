@@ -1,11 +1,14 @@
 // @ts-strict-ignore
 import { createRef, PureComponent } from 'react';
 import type { CSSProperties, ReactNode, Ref, RefObject, UIEvent } from 'react';
+import { flushSync } from 'react-dom';
 
 import { View } from '@actual-app/components/view';
 import { memoizeOne } from '@actual-app/core/shared/memoize';
 
 const IS_SCROLLING_DEBOUNCE_INTERVAL = 150;
+export const ROW_REORDER_DURATION_MS = 250;
+const REORDER_START_DELAY_MS = 10;
 
 const defaultItemKey: FixedSizeListProps['itemKey'] = (index: number) => index;
 
@@ -21,6 +24,9 @@ type FixedSizeListProps = {
   }) => ReactNode;
   layout?: 'vertical' | 'horizontal';
   overscanCount?: number;
+  syncScrollJumps?: boolean;
+  scrollBackground?: string;
+  rangeKey?: object;
   useIsScrolling?: boolean;
   headerHeight?: number;
   initialScrollOffset?: number;
@@ -68,6 +74,7 @@ export class FixedSizeList extends PureComponent<
     offset: number;
   } = null;
   rerenderTimeout: ReturnType<typeof setTimeout>;
+  reorderTimeout?: ReturnType<typeof setTimeout>;
 
   static defaultProps: Partial<FixedSizeListProps> = {
     direction: 'ltr',
@@ -169,15 +176,26 @@ export class FixedSizeList extends PureComponent<
 
     if (this.needsAnimationRerender.current) {
       this.needsAnimationRerender.current = false;
+      if (
+        window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches
+      ) {
+        this._outerRef?.classList.add('register-reordering');
+        clearTimeout(this.reorderTimeout);
+        this.reorderTimeout = setTimeout(() => {
+          this._outerRef?.classList.remove('register-reordering');
+        }, REORDER_START_DELAY_MS + ROW_REORDER_DURATION_MS);
+      }
       this.rerenderTimeout = setTimeout(() => {
         this.forceUpdate();
-      }, 10);
+      }, REORDER_START_DELAY_MS);
     }
 
     this._callPropsCallbacks();
   }
 
   componentWillUnmount() {
+    clearTimeout(this.reorderTimeout);
+    clearTimeout(this.rerenderTimeout);
     if (this._resetIsScrollingTimeoutId !== null) {
       clearTimeout(this._resetIsScrollingTimeoutId);
     }
@@ -201,36 +219,34 @@ export class FixedSizeList extends PureComponent<
     const positions = new Map();
 
     const items = [];
-    if (itemCount > 0) {
-      for (let index = startIndex; index <= stopIndex; index++) {
-        const key = itemKey(index);
-        let style = this._getItemStyle(index);
-        const lastPosition = this.lastPositions.current.get(key);
-        let animating = false;
-        positions.set(key, style.top);
+    for (let index = startIndex; itemCount > 0 && index <= stopIndex; index++) {
+      const key = itemKey(index);
+      let style = this._getItemStyle(index);
+      const lastPosition = this.lastPositions.current.get(key);
+      let animating = false;
+      positions.set(key, style.top);
 
-        if (
-          this.animationEnabled &&
-          lastPosition != null &&
-          lastPosition !== style.top
-        ) {
-          // A reorder has happened. Render it in the old place, then
-          // animate it to the new one
-          style = { ...style, top: lastPosition };
-          this.needsAnimationRerender.current = true;
-          animating = true;
-        }
-
-        items.push(
-          renderRow({
-            index,
-            key,
-            style,
-            isScrolling: useIsScrolling ? isScrolling : undefined,
-            isAnimating: animating,
-          }),
-        );
+      if (
+        this.animationEnabled &&
+        lastPosition != null &&
+        lastPosition !== style.top
+      ) {
+        // A reorder has happened. Render it in the old place, then
+        // animate it to the new one.
+        style = { ...style, top: lastPosition };
+        this.needsAnimationRerender.current = true;
+        animating = true;
       }
+
+      items.push(
+        renderRow({
+          index,
+          key,
+          style,
+          isScrolling: useIsScrolling ? isScrolling : undefined,
+          isAnimating: animating,
+        }),
+      );
     }
 
     this.lastPositions.current = positions;
@@ -248,6 +264,7 @@ export class FixedSizeList extends PureComponent<
           height,
           width,
           overflow: 'hidden auto',
+          background: this.props.scrollBackground,
         }}
       >
         <View>{header}</View>
@@ -386,6 +403,7 @@ export class FixedSizeList extends PureComponent<
       overscanStopIndex,
       visibleStartIndex,
       visibleStopIndex,
+      _rangeKey,
     ) =>
       this.props.onItemsRendered({
         overscanStartIndex,
@@ -419,6 +437,7 @@ export class FixedSizeList extends PureComponent<
           overscanStopIndex,
           visibleStartIndex,
           visibleStopIndex,
+          this.props.rangeKey,
         );
       }
     }
@@ -510,24 +529,38 @@ export class FixedSizeList extends PureComponent<
   _onScrollVertical = (event: UIEvent<HTMLDivElement>) => {
     const { scrollTop } = event.currentTarget;
 
-    this.setState(prevState => {
-      if (prevState.scrollOffset === scrollTop) {
-        // Scroll position may have been updated by cDM/cDU,
-        // In which case we don't need to trigger another render,
-        // And we don't want to update state.isScrolling.
-        return null;
-      }
+    const updateScrollPosition = () => {
+      this.setState(prevState => {
+        if (prevState.scrollOffset === scrollTop) {
+          // Scroll position may have been updated by cDM/cDU,
+          // In which case we don't need to trigger another render,
+          // And we don't want to update state.isScrolling.
+          return null;
+        }
 
-      const scrollOffset = scrollTop;
+        const scrollOffset = scrollTop;
 
-      return {
-        isScrolling: true,
-        scrollDirection:
-          prevState.scrollOffset < scrollOffset ? 'forward' : 'backward',
-        scrollOffset,
-        scrollUpdateWasRequested: false,
-      };
-    }, this._resetIsScrollingDebounced);
+        return {
+          isScrolling: true,
+          scrollDirection:
+            prevState.scrollOffset < scrollOffset ? 'forward' : 'backward',
+          scrollOffset,
+          scrollUpdateWasRequested: false,
+        };
+      }, this._resetIsScrollingDebounced);
+    };
+
+    // Dragging the scrollbar can move the viewport beyond every mounted row.
+    // Commit the new window in the scroll event so React does not defer it.
+    if (
+      this.props.syncScrollJumps &&
+      Math.abs(scrollTop - this.state.scrollOffset) >=
+        event.currentTarget.clientHeight
+    ) {
+      flushSync(updateScrollPosition);
+    } else {
+      updateScrollPosition();
+    }
   };
 
   _outerRefSetter = (ref: HTMLDivElement) => {

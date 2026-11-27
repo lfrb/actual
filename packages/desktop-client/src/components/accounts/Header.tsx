@@ -67,7 +67,7 @@ type AccountHeaderProps = {
   savedFilters: TransactionFilterEntity[];
   accountsSyncing: string[];
   accounts: AccountEntity[];
-  transactions: TransactionEntity[];
+  getTransaction: (id: string) => TransactionEntity | undefined;
   showExtraBalances: boolean;
   showReconciled: boolean;
   showEmptyMessage: boolean;
@@ -139,7 +139,7 @@ export function AccountHeader({
   savedFilters,
   accountsSyncing,
   accounts,
-  transactions,
+  getTransaction,
   showExtraBalances,
   showReconciled,
   showEmptyMessage,
@@ -385,7 +385,7 @@ export function AccountHeader({
             </View>
           ) : (
             <SelectedTransactionsButton
-              getTransaction={id => transactions.find(t => t.id === id)}
+              getTransaction={getTransaction}
               onShow={onShowTransactions}
               onDuplicate={onBatchDuplicate}
               onDelete={onBatchDelete}

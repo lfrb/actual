@@ -5,7 +5,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -99,6 +98,7 @@ import {
   Field,
   InputCell,
   Row,
+  rowInteriorBackground,
   SelectCell,
   Table,
   UnexposedCellContent,
@@ -129,7 +129,6 @@ import { useLocalPref } from '#hooks/useLocalPref';
 import { useMergedRefs } from '#hooks/useMergedRefs';
 import { usePrevious } from '#hooks/usePrevious';
 import { useProperFocus } from '#hooks/useProperFocus';
-import { useResizeObserver } from '#hooks/useResizeObserver';
 import { useSelectedDispatch, useSelectedItems } from '#hooks/useSelected';
 import { SheetNameProvider } from '#hooks/useSheetName';
 import { useSplitsExpanded } from '#hooks/useSplitsExpanded';
@@ -140,6 +139,7 @@ import { NotesTagFormatter } from '#notes/NotesTagFormatter';
 import { addNotification } from '#notifications/notificationsSlice';
 import { getPayeesById } from '#payees';
 import { aqlQuery } from '#queries/aqlQuery';
+import type { RegisterQuery } from '#queries/registerQuery';
 import { useDispatch } from '#redux';
 import { getStatusLabel } from '#util/schedule';
 import {
@@ -175,6 +175,9 @@ type AmountColumnWidths = {
   amount: number; // Applies to both debit and credit columns
   balance: number;
 };
+
+const DATE_COLUMN_WIDTH = 110;
+const STATUS_COLUMN_WIDTH = 38;
 
 export const DEFAULT_AMOUNT_COLUMN_WIDTHS: AmountColumnWidths = {
   amount: 100,
@@ -269,7 +272,7 @@ const TransactionHeader = memo(
     > = {
       date: {
         value: columnLabels.date,
-        width: 110,
+        width: DATE_COLUMN_WIDTH,
         alignItems: 'flex',
         marginLeft: -5,
         sortDirection: 'desc',
@@ -330,7 +333,7 @@ const TransactionHeader = memo(
       },
       cleared: {
         value: '✓',
-        width: 38,
+        width: STATUS_COLUMN_WIDTH,
         alignItems: 'center',
         tooltip: <ClearedColumnLegend />,
         sortDirection: 'asc',
@@ -515,7 +518,7 @@ function StatusCell({
   return (
     <Cell
       name="cleared"
-      width={38}
+      width={STATUS_COLUMN_WIDTH}
       alignItems="center"
       focused={focused}
       style={{ padding: 1 }}
@@ -992,7 +995,10 @@ function PayeeIcons({
 }
 
 type TransactionProps = {
+  sharedRowDivider?: boolean;
+  onDatePicked?: () => void;
   allTransactions?: TransactionEntity[];
+  getRegisterRow?: RegisterQuery['getRow'];
   transaction: TransactionEntity;
   subtransactions: TransactionEntity[] | null;
   transferAccountsByTransaction: {
@@ -1063,7 +1069,10 @@ type TransactionProps = {
 };
 
 const Transaction = memo(function Transaction({
+  sharedRowDivider,
+  onDatePicked,
   allTransactions,
+  getRegisterRow,
   transaction: originalTransaction,
   subtransactions,
   transferAccountsByTransaction,
@@ -1557,7 +1566,8 @@ const Transaction = memo(function Transaction({
   useTransactionRowContextActions({
     rowRef: triggerRef,
     transaction,
-    getTransaction: id => allTransactions?.find(t => t.id === id),
+    getTransaction: id =>
+      getRegisterRow?.(id) ?? allTransactions?.find(t => t.id === id),
     onDelete: ids => onBatchDelete?.(ids),
     onDuplicate: ids => onBatchDuplicate?.(ids),
     onLinkSchedule: ids => onBatchLinkSchedule?.(ids),
@@ -1633,9 +1643,9 @@ const Transaction = memo(function Transaction({
           <Field
             key={columnId}
             /* Date blank placeholder for Child transaction */
-            width={110}
+            width={DATE_COLUMN_WIDTH}
             style={{
-              width: 110,
+              width: DATE_COLUMN_WIDTH,
               backgroundColor: theme.tableRowBackgroundHover,
               border: 0, // known z-order issue, bottom border for parent transaction hidden
             }}
@@ -1645,7 +1655,7 @@ const Transaction = memo(function Transaction({
             key={columnId}
             /* Date field for non-child transaction */
             name="date"
-            width={110}
+            width={DATE_COLUMN_WIDTH}
             textAlign="flex"
             exposed={focusedField === 'date'}
             value={date}
@@ -1678,6 +1688,7 @@ const Transaction = memo(function Transaction({
                 clearOnBlur
                 onUpdate={onUpdate}
                 onSelect={onSave}
+                onCalendarSelect={onDatePicked}
                 transferDateSyncChecked={syncTransferDate}
                 onTransferDateSyncChange={
                   transaction.transfer_id ||
@@ -2125,6 +2136,16 @@ const Transaction = memo(function Transaction({
     }
   };
 
+  const rowBackground = selected
+    ? theme.tableRowBackgroundHighlight
+    : backgroundFocus
+      ? theme.tableRowBackgroundHover
+      : index % 2 === 0
+        ? theme.tableBackground
+        : theme.tableRowBackgroundAlternate;
+  const useSharedDivider =
+    sharedRowDivider && !selected && !editing && !backgroundFocus && !pulse;
+
   return (
     <View
       innerRef={dropRef}
@@ -2139,16 +2160,35 @@ const Transaction = memo(function Transaction({
         {...dragProps}
         {...(pulse && { 'data-pulse': true })}
         style={{
-          backgroundColor: selected
-            ? theme.tableRowBackgroundHighlight
-            : backgroundFocus
-              ? theme.tableRowBackgroundHover
-              : index % 2 === 0
-                ? theme.tableBackground
-                : theme.tableRowBackgroundAlternate,
-          ':hover': !(backgroundFocus || selected) && {
-            backgroundColor: theme.tableRowBackgroundHover,
-          },
+          ...(useSharedDivider
+            ? { backgroundImage: rowInteriorBackground(rowBackground) }
+            : { backgroundColor: rowBackground }),
+          ':hover':
+            !(backgroundFocus || selected) &&
+            (useSharedDivider
+              ? {
+                  backgroundImage: rowInteriorBackground(
+                    theme.tableRowBackgroundHover,
+                  ),
+                }
+              : { backgroundColor: theme.tableRowBackgroundHover }),
+          ...(useSharedDivider && {
+            '&& > *': {
+              borderTopColor: 'transparent',
+              borderBottomColor: 'transparent',
+              backgroundClip: 'padding-box',
+            },
+            '.register-reordering &': {
+              backgroundColor: rowBackground,
+              backgroundImage: 'none',
+              ':hover': { backgroundColor: theme.tableRowBackgroundHover },
+            },
+            '.register-reordering && > *': {
+              borderTopColor: theme.tableBorder,
+              borderBottomColor: theme.tableBorder,
+              backgroundClip: 'border-box',
+            },
+          }),
           '& .hover-visible': {
             opacity: 0,
           },
@@ -2307,19 +2347,10 @@ function NotesCell({
   }
 
   const textRef = useRef<HTMLSpanElement | null>(null);
-  const [isTruncated, setIsTruncated] = useState(false);
-  const checkTruncated = useCallback(() => {
+  const isTruncated = useCallback(() => {
     const el = textRef.current;
-    setIsTruncated(el != null && el.scrollWidth > el.clientWidth);
+    return el != null && el.scrollWidth > el.clientWidth;
   }, []);
-  const resizeRef = useResizeObserver<HTMLSpanElement>(checkTruncated);
-  const setTextRef = useCallback(
-    (el: HTMLSpanElement | null) => {
-      textRef.current = el;
-      resizeRef(el as HTMLSpanElement);
-    },
-    [resizeRef],
-  );
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.key === 'Enter' || e.key === 'Tab') {
@@ -2333,10 +2364,6 @@ function NotesCell({
   // Tags can only be removed from the transaction's own note (not the
   // schedule name shown as a fallback), and only where the cell is editable.
   const onNotesChange = !isReadOnly && note ? onUpdate : undefined;
-
-  useLayoutEffect(() => {
-    checkTruncated();
-  }, [displayedNote, checkTruncated]);
 
   return (
     <CustomCell
@@ -2371,9 +2398,10 @@ function NotesCell({
           }
           style={{ ...styles.tooltip }}
           placement="bottom start"
-          triggerProps={{ delay: 500, isDisabled: !isTruncated }}
+          shouldOpen={isTruncated}
+          triggerProps={{ delay: 500, isDisabled: !displayedNote }}
         >
-          <UnexposedCellContent {...props} ref={setTextRef} />
+          <UnexposedCellContent {...props} ref={textRef} />
         </Tooltip>
       )}
     >
@@ -2664,7 +2692,9 @@ type TransactionTableInnerProps = {
   newTransactions: TransactionEntity[];
 
   transactions: TransactionEntity[];
-  loadMoreTransactions: () => void;
+  loadMoreTransactions?: () => void;
+  windowedRows?: TableProps<TransactionEntity>['windowedRows'];
+  getRegisterRow?: RegisterQuery['getRow'];
   accounts: AccountEntity[];
   categoryGroups: CategoryGroupEntity[];
   payees: PayeeEntity[];
@@ -2731,6 +2761,78 @@ type TransactionTableInnerProps = {
   onDragChange?: OnDragChangeCallback<TransactionEntity>;
   onDrop?: OnDropCallback;
 };
+
+function getTransactionRowFallback(
+  columns: readonly TransactionTableColumnId[],
+  amountColumnWidths: AmountColumnWidths,
+  width: number,
+  rowHeight: number,
+) {
+  const shade = `color-mix(in srgb, ${theme.tableText} 9%, transparent)`;
+  const fixedWidths: Partial<Record<TransactionTableColumnId, number>> = {
+    date: DATE_COLUMN_WIDTH,
+    cleared: STATUS_COLUMN_WIDTH,
+    payment: amountColumnWidths.amount,
+    deposit: amountColumnWidths.amount,
+    balance: amountColumnWidths.balance,
+  };
+  const barWidths: Partial<Record<TransactionTableColumnId, number>> = {
+    date: 64,
+    account: 72,
+    payee: 88,
+    category: 80,
+    group: 64,
+    payment: 48,
+    deposit: 48,
+    balance: 56,
+  };
+  const selectionWidth = 20;
+  const endPadding = 5;
+  const fixedWidth = columns.reduce(
+    (total, column) => total + (fixedWidths[column] ?? 0),
+    selectionWidth + endPadding,
+  );
+  const flexibleColumns = columns.filter(
+    column => fixedWidths[column] === undefined,
+  );
+  const flexibleWidth =
+    Math.max(0, width - fixedWidth) / Math.max(1, flexibleColumns.length);
+  const barHeight = 7;
+  const radius = barHeight / 2;
+  const barTop = Math.floor((rowHeight - barHeight) / 2);
+  const barBottom = barTop + barHeight;
+  const barCenter = barTop + radius;
+  let left = selectionWidth;
+
+  // Each layer repeats once per row and moves with native scrolling.
+  return columns
+    .map(column => {
+      const columnWidth = fixedWidths[column] ?? flexibleWidth;
+      const columnLeft = left;
+      left += columnWidth;
+      if (column === 'cleared') {
+        const x = columnLeft + (columnWidth - 12) / 2;
+        return `radial-gradient(circle at center, ${shade} 5px, transparent 6px) left ${x}px top 0 / 12px ${rowHeight}px repeat-y local`;
+      }
+      const amount =
+        column === 'payment' || column === 'deposit' || column === 'balance';
+      const availableWidth = Math.max(0, columnWidth - 10);
+      const barWidth = Math.floor(
+        Math.min(availableWidth * 0.65, barWidths[column] ?? Infinity),
+      );
+      if (barWidth <= barHeight) return '';
+      const x = amount ? left - 5 - barWidth : columnLeft + 5;
+      const endCap = (center: 'left' | 'right', offset: number) =>
+        `radial-gradient(circle ${radius}px at ${center} ${barCenter}px, ${shade} calc(100% - 0.5px), transparent 100%) left ${offset}px top 0 / ${radius}px ${rowHeight}px repeat-y local`;
+      return [
+        endCap('right', x),
+        `linear-gradient(to bottom, transparent 0 ${barTop}px, ${shade} ${barTop}px ${barBottom}px, transparent ${barBottom}px) left ${x + radius}px top 0 / ${barWidth - barHeight}px ${rowHeight}px repeat-y local`,
+        endCap('left', x + barWidth - radius),
+      ].join(', ');
+    })
+    .filter(Boolean)
+    .join(', ');
+}
 
 function TransactionTableInner({
   tableNavigator,
@@ -2891,6 +2993,9 @@ function TransactionTableInner({
     return (
       <Transaction
         allTransactions={props.transactions}
+        sharedRowDivider
+        onDatePicked={() => tableNavigator.onEdit(null)}
+        getRegisterRow={props.getRegisterRow}
         editing={editing}
         transaction={trans}
         transferAccountsByTransaction={props.transferAccountsByTransaction}
@@ -3036,8 +3141,20 @@ function TransactionTableInner({
           listContainerRef={listContainerRef}
           items={transactionsToRender}
           renderItem={renderRow}
+          getRowFallbackBackground={(width, rowHeight) =>
+            getTransactionRowFallback(
+              props.columns,
+              amountColumnWidths,
+              width - scrollWidth,
+              rowHeight,
+            )
+          }
           renderEmpty={renderEmpty}
           loadMore={props.loadMoreTransactions}
+          windowedRows={props.windowedRows}
+          overscanCount={15}
+          syncScrollJumps
+          showRowGrid
           isSelected={id => props.selectedItems.has(id)}
           onKeyDown={e => props.onCheckEnter(e)}
           saveScrollWidth={saveScrollWidth}
@@ -3073,7 +3190,11 @@ type TableState = {
 
 export type TransactionTableProps = {
   transactions: readonly TransactionEntity[];
-  loadMoreTransactions: () => void;
+  loadMoreTransactions?: () => void;
+  registerGroups?: RegisterQuery['groups'];
+  getRegisterRow?: RegisterQuery['getRow'];
+  upcomingTransactions?: readonly TransactionEntity[];
+  requestRegisterRange?: RegisterQuery['requestRange'];
   accounts: AccountEntity[];
   categoryGroups: CategoryGroupEntity[];
   payees: PayeeEntity[];
@@ -3300,6 +3421,61 @@ export const TransactionTable = forwardRef(
       );
     }, [transactionsWithExpandedSplits]);
 
+    const { registerGroups, upcomingTransactions, requestRegisterRange } =
+      props;
+    const registerRows = useMemo(() => {
+      if (!registerGroups) return;
+      const ids: string[] = [];
+      const groupPositions: number[] = [];
+      const indices = new Map<string, number>();
+
+      function addRow(
+        row: { id: string; reconciled?: TransactionEntity['reconciled'] },
+        groupIndex: number,
+      ) {
+        if (!props.showReconciled && row.reconciled) return;
+        indices.set(row.id, ids.length);
+        ids.push(row.id);
+        groupPositions.push(groupIndex);
+      }
+
+      upcomingTransactions?.forEach(row => {
+        if (!row.parent_id || splitsExpanded.isExpanded(row.parent_id)) {
+          addRow(row, 0);
+        }
+      });
+      registerGroups.forEach((group, groupIndex) => {
+        addRow(group, groupIndex);
+        if (
+          group.subtransactions.length &&
+          splitsExpanded.isExpanded(group.id)
+        ) {
+          group.subtransactions.forEach(row => addRow(row, groupIndex));
+        }
+      });
+      return { ids, groupPositions, indices };
+    }, [
+      registerGroups,
+      upcomingTransactions,
+      props.showReconciled,
+      splitsExpanded,
+    ]);
+
+    const windowedRows =
+      useMemo((): TableProps<TransactionEntity>['windowedRows'] => {
+        if (!registerRows || !requestRegisterRange) return;
+        return {
+          ids: registerRows.ids,
+          getItem: index => transactionMap.get(registerRows.ids[index]),
+          indexOf: id => registerRows.indices.get(id) ?? -1,
+          requestRange: (start, stop) => {
+            requestRegisterRange(
+              registerRows.groupPositions.slice(start, stop + 1),
+            );
+          },
+        };
+      }, [registerRows, requestRegisterRange, transactionMap]);
+
     // Scrolls to the focused transaction once it's listed, and again when
     // rows are added above it, e.g. upcoming scheduled transactions
     const { focusedTransactionId, onFocusedTransactionShown } = props;
@@ -3385,6 +3561,7 @@ export const TransactionTable = forwardRef(
     const tableNavigator = useTableNavigator(
       transactionsWithExpandedSplits,
       getFieldsTableTransaction,
+      windowedRows?.indexOf,
     );
     const shouldSchedule = useRef(false);
     const shouldAdd = useRef(false);
@@ -4127,6 +4304,7 @@ export const TransactionTable = forwardRef(
             {...props}
             columns={visibleColumns}
             transactions={transactionsWithExpandedSplits}
+            windowedRows={windowedRows}
             transactionMap={transactionMap}
             transactionsByParent={transactionsByParent}
             transferAccountsByTransaction={transferAccountsByTransaction}
